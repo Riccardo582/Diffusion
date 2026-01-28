@@ -2,12 +2,12 @@ import logging
 import os
 from pathlib import Path
 from typing import Union, List
-
+import torch
 from torch.utils.data import DataLoader
 
 from .pt_dataset import PTDataset
 from .web_utils import download_from_zenodo_record
-from neuralop.utils import get_project_root
+
 
 logger = logging.Logger(logging.root.level)
 
@@ -135,7 +135,7 @@ class NavierStokesDataset(PTDataset):
         )
 
 
-example_data_root = get_project_root() / "neuralop/datasets/data"
+example_data_root = get_project_root() / "Diffusion/data/datasets"
 
 
 # load navier stokes pt for backwards compatibility
@@ -190,3 +190,39 @@ def load_navier_stokes_pt(
         )
 
     return train_loader, test_loaders, dataset.data_processor
+
+if os.name == "__main__":
+    train_loader, test_loaders, data_processor = load_navier_stokes_pt(
+        n_train=1000,
+        n_tests=[200],              # one test set
+        batch_size=8,
+        test_batch_sizes=[8],
+        data_root="path/to/data",   # where .pt files will be stored (downloaded if missing)
+        train_resolution=128,
+        test_resolutions=[128],
+        num_workers=0,              # start with 0 in notebooks/Windows to avoid multiprocessing issues
+    )
+        # Access training data
+    x, y = dataset.train_db[0]
+    print("Single sample shapes:")
+    print("x:", x.shape)
+    print("y:", y.shape)
+
+    # Build a DataLoader
+    train_loader = DataLoader(
+        dataset.train_db,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0,   # IMPORTANT for Windows / notebooks
+    )
+
+    xb, yb = next(iter(train_loader))
+    print("Batch shapes:")
+    print("xb:", xb.shape)
+    print("yb:", yb.shape)
+
+    print("Test loaders:")
+    for res, db in dataset.test_dbs.items():
+        print(f"resolution {res}: {len(db)} samples")
+
+    print("✓ NavierStokesDataset test passed")
