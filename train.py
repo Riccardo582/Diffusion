@@ -1,6 +1,4 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-
+                                                                                                                                           
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
@@ -34,24 +32,67 @@ from diffusion import create_diffusion
 #################################################################################
 
 class PDEDataset(Dataset):
-    def __init__(self, root):
+    def __init__(self, path):
         super().__init__()
-        self.items = self._scan(root)   # implement indexing
+        self.path = path
 
-    def _scan(self, root):
-        # e.g. list of .pt files, or indices into a bigger array
-        return sorted([os.path.join(root, f) for f in os.listdir(root) if f.endswith(".pt")])
+        # Case A: directory of per-sample .pt files
+        if os.path.isdir(path):
+            self.mode = "dir"
+            self.items = sorted(
+                os.path.join(path, f) for f in os.listdir(path) if f.endswith(".pt")
+            )
+            if len(self.items) == 0:
+                raise FileNotFoundError(f"No .pt files found in directory: {path}")
+            return
+
+        # Case B: single packed .pt dataset file
+        if os.path.isfile(path) and path.endswith(".pt"):
+            self.mode = "file"
+            obj = torch.load(path, map_location="cpu")
+
+            if not isinstance(obj, dict):
+                raise TypeError(f"Expected a dict in {path}, got {type(obj)}")
+
+            # Try common key conventions used in PDE datasets
+            self.x = obj.get("x_cond") or obj.get("x") or obj.get("a")
+            self.y = obj.get("y") or obj.get("u")
+            self.phys = obj.get("phys", None)
+
+            if self.x is None or self.y is None:
+                raise KeyError(f"Could not find x/y tensors in {path}. Keys: {list(obj.keys())}")
+
+            if self.x.shape[0] != self.y.shape[0]:
+                raise ValueError(f"x and y must have same N. Got {self.x.shape[0]} vs {self.y.shape[0]}")
+
+            self.N = self.x.shape[0]
+            return
+
+        raise FileNotFoundError(f"Not a valid directory or .pt file: {path}")
 
     def __len__(self):
-        return len(self.items)
+        if self.mode == "dir":
+            return len(self.items)
+        return self.N
 
     def __getitem__(self, idx):
-        sample = torch.load(self.items[idx])  # you decide the storage format
-        x_cond = sample["x_cond"].float()     # (Cx, H, W)
-        y      = sample["y"].float()          # (Cy, H, W)
-        phys   = sample.get("phys", None)     # (P,) or None
-        # coords = sample.get("coords", None) # if you use them
+        if self.mode == "dir":
+            sample = torch.load(self.items[idx], map_location="cpu")
+            x_cond = sample["x_cond"].float()
+            y = sample["y"].float()
+            phys = sample.get("phys", None)
+            if phys is not None:
+                phys = phys.float()
+            return x_cond, y, phys
+
+        # mode == "file"
+        x_cond = self.x[idx].float()
+        y = self.y[idx].float()
+        phys = None
+        if self.phys is not None:
+            phys = self.phys[idx].float()
         return x_cond, y, phys
+
 
 @torch.no_grad()
 def update_ema(ema_model, model, decay=0.9999):
@@ -158,10 +199,8 @@ def main(args):
     # Create model:
     model = DiT_models[args.model](
         input_size=args.image_size,
-        patch_size = 2,
         in_channels=args.cx+args.cy,
-        learn_sigma=True,
-        n_physical_params=args.phys_dim,
+        learn_sigma=False,
         pos_mode=args.pos_mode,
     )
     model.set_out_channels(cy=args.cy)
@@ -169,7 +208,8 @@ def main(args):
     # Note that parameter initialization is done within the DiT constructor
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     requires_grad(ema, False)
-    model = DDP(model.to(device), device_ids=[rank])
+    device = torch.device("cuda", device)
+    model = DDP(model.to(device), device_ids=[device])
     diffusion = create_diffusion(timestep_respacing="")  # default: 1000 steps, linear noise schedule
     logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
@@ -217,9 +257,11 @@ def main(args):
             # y:      (B, Cy, H, W)
             x_cond = x_cond.to(device)
             y      = y.to(device)
-            if phys is not None:
-                phys = phys.to(device).float()  # (B, P)
-
+            if phys is None or (isinstance(phys, (list, tuple)) and all(p is None for p in phys)):
+                phys = None
+            else:
+                phys = phys.to(device).float()
+            
             B = y.shape[0]
             # sample diffusion timesteps
             t = torch.randint(0, diffusion.num_timesteps, (B,), device=device, dtype=torch.long)
