@@ -288,6 +288,9 @@ def main(args):
             phys = phys.to(device).float()
             if phys.numel() == 0:
                 phys = None
+                if train_steps == 0 and rank == 0:
+                print("x_cond shape:", x_cond.shape)
+                print("y shape:", y.shape)
 
             
             B = y.shape[0]
