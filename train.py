@@ -171,6 +171,25 @@ def gather_alpha_bar(diffusion,t,device):
     ab = diffusion.alphas_cumprod.to(device)  # (T,) 
     return ab.index_select(0, t).view(-1, 1, 1, 1)      # (B,1,1,1)
 
+def pde_collate(batch):
+    """Collate function that can handle missing phys parameters"""
+    # batch: list of (x_cond, y, phys)
+    x_list, y_list, phys_list = zip(*batch)
+    x = torch.stack(x_list, dim=0)
+    y = torch.stack(y_list, dim=0)
+
+    # If phys is missing, return an empty tensor (B, 0)
+    if all(p is None for p in phys_list):
+        phys = torch.empty(len(batch), 0)
+    else:
+        # If some are None and some not, this is inconsistent; make it explicit
+        if any(p is None for p in phys_list):
+            raise ValueError("Inconsistent phys: some samples have phys, others are None")
+        phys = torch.stack(phys_list, dim=0)
+
+    return x, y, phys
+
+
 #################################################################################
 #                                  Training Loop                                #
 #################################################################################
@@ -242,6 +261,7 @@ def main(args):
         num_workers=args.num_workers,
         pin_memory=True,
         drop_last=True,
+        collate_fn=pde_collate, 
     )
     logger.info(f"Dataset contains {len(dataset):,} PDE samples ({args.data_path})")
 
@@ -265,10 +285,10 @@ def main(args):
             # y:      (B, Cy, H, W)
             x_cond = x_cond.to(device)
             y      = y.to(device)
-            if phys is None or (isinstance(phys, (list, tuple)) and all(p is None for p in phys)):
+            phys = phys.to(device).float()
+            if phys.numel() == 0:
                 phys = None
-            else:
-                phys = phys.to(device).float()
+
             
             B = y.shape[0]
             # sample diffusion timesteps
