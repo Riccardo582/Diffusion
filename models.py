@@ -210,7 +210,12 @@ class DiT(nn.Module):
         """Call once after constructing the model to define target channels.
         Make sure to call set:out_channels(cy) after initializing the DiT model."""
         self.out_channels = (2 * cy) if self.learn_sigma else cy
-        self.final_layer = FinalLayer(self.x_embedder.embed_dim, self.patch_size, self.out_channels)
+        embed_dim = getattr(self.x_embedder, "embed_dim", None)
+        if embed_dim is None:
+            # timm PatchEmbed: embedding dim is the out_channels of the conv projection
+            embed_dim = self.x_embedder.proj.out_channels
+        self.final_layer = FinalLayer(embed_dim, self.patch_size, self.out_channels)
+
         # Zero-init final heads (AdaLN-Zero architecture)
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
