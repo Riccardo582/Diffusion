@@ -55,8 +55,14 @@ class PDEDataset(Dataset):
                 raise TypeError(f"Expected a dict in {path}, got {type(obj)}")
 
             # Try common key conventions used in PDE datasets
-            self.x = obj.get("x_cond") or obj.get("x") or obj.get("a")
-            self.y = obj.get("y") or obj.get("u")
+            def pick(d, keys):
+                for k in keys:
+                    v = d.get(k, None)
+                    if v is not None:
+                        return v
+                return None
+            self.x = pick(obj,["x_cond","x","a"])
+            self.y = pick(obj,["y","u"])
             self.phys = obj.get("phys", None)
 
             if self.x is None or self.y is None:
