@@ -89,6 +89,8 @@ class PDEDataset(Dataset):
             phys = sample.get("phys", None)
             if phys is not None:
                 phys = phys.float()
+            else:
+                phys = torch.empty(0)
             return x_cond, y, phys
 
         # mode == "file"
