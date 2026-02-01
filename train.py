@@ -6,6 +6,8 @@
 A minimal training script for DiT using PyTorch DDP.
 """
 import torch
+
+import diffusion
 # the first flag below was False when we tested this script but True makes A100 training a lot faster:
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -170,8 +172,19 @@ def gather_alpha_bar(diffusion,t,device):
     """
     Gather alpha_bar values for a batch of timesteps.
     """
-    ab = diffusion.alphas_cumprod.to(device)  # (T,) 
-    return ab.index_select(0, t).view(-1, 1, 1, 1)      # (B,1,1,1)
+    ab = diffusion.alphas_cumprod  
+
+    # Convert once per call if needed and move to device
+    if isinstance(ab, np.ndarray):
+        ab = torch.from_numpy(ab).float().to(torch.device)
+    elif isinstance(ab, torch.Tensor):
+        ab = ab.to(device)
+    else:
+        ab = torch.tensor(ab, dtype=torch.float32, device=device)
+
+    t = t.long().to(device)        # indices must be int64
+    out = ab.gather(0, t)          # (B,)
+    return out.view(-1, 1, 1, 1)   # (B,1,1,1)
 
 def pde_collate(batch):
     """Collate function that can handle missing phys parameters"""
