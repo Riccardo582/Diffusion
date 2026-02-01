@@ -153,6 +153,8 @@ def multiscale_noise(y,scales=(1,2,4,8),weights=None):
     weights: list of weights (floats), same length as scales
     returns: (B,C,H,W) tensor of multiscale noise
     '''
+    if y.dim() == 3:
+        y = y.unsqueeze(1)  # (B,1,H,W)
     B,C,H,W = y.shape
     if weights is None:
         weights = [1/len(scales)]*len(scales) # equal weights
