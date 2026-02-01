@@ -176,7 +176,7 @@ def gather_alpha_bar(diffusion,t,device):
 
     # Convert once per call if needed and move to device
     if isinstance(ab, np.ndarray):
-        ab = torch.from_numpy(ab).float().to(torch.device)
+        ab = torch.from_numpy(ab).float().to(device)
     elif isinstance(ab, torch.Tensor):
         ab = ab.to(device)
     else:
