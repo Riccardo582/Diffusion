@@ -3,6 +3,7 @@
 #     ADM:   https://github.com/openai/guided-diffusion/blob/main/guided_diffusion
 #     IDDPM: https://github.com/openai/improved-diffusion/blob/main/improved_diffusion/gaussian_diffusion.py
 
+import torch
 from . import gaussian_diffusion as gd
 from .respace import SpacedDiffusion, space_timesteps
 
@@ -18,6 +19,12 @@ def create_diffusion(
     diffusion_steps=1000
 ):
     betas = gd.get_named_beta_schedule(noise_schedule, diffusion_steps)
+    if isinstance(betas, np.ndarray):
+        betas = torch.from_numpy(betas).float()
+    elif not isinstance(betas, torch.Tensor):
+        betas = torch.tensor(betas, dtype=torch.float32)
+    else:
+        betas = betas.float()
     if use_kl:
         loss_type = gd.LossType.RESCALED_KL
     elif rescale_learned_sigmas:
