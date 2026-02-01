@@ -4,6 +4,7 @@
 #     IDDPM: https://github.com/openai/improved-diffusion/blob/main/improved_diffusion/gaussian_diffusion.py
 
 import torch
+import numpy as np
 from . import gaussian_diffusion as gd
 from .respace import SpacedDiffusion, space_timesteps
 
