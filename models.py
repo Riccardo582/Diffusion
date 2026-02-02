@@ -239,7 +239,10 @@ class DiT(nn.Module):
         Gh, Gw = H // p, W // p
 
         pe = get_2d_sincos_rect_pos_embed(dim, Gh, Gw)  # (Gh*Gw, dim) numpy
-        self.pos_embed.data = torch.from_numpy(pe).float().unsqueeze(0)  # (1, N, dim)
+        # Convert to tensor and load to gpu if needed
+        pe_t = torch.from_numpy(pe).to(device=self.pos_embed.device, dtype=self.pos_embed.dtype).unsqueeze(0)
+        self.pos_embed.data.copy_(pe_t)  
+
         self._pos_inited = True
 
     def unpatchify(self, x, H=None, W=None):
