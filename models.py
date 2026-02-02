@@ -223,30 +223,57 @@ class DiT(nn.Module):
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
     @torch.no_grad()
-    def _maybe_init_pos(self):
+    def _maybe_init_pos(self,H,W):
         """Fill fixed 2D sin-cos positions once, using rectangular (Gh,Gw) from PatchEmbed."""
         if self._pos_inited or self.pos_mode != "grid_sincos":
             return
-        # timm PatchEmbed computes grid_size at build time if input_size was given
-        Gh, Gw = self.x_embedder.grid_size
-        pe = get_2d_sincos_rect_pos_embed(self.x_embedder.embed_dim, Gh, Gw)  # (Gh*Gw, C)
-        self.pos_embed.data = torch.from_numpy(pe).float().unsqueeze(0)       # (1,N,C)
+
+        dim = self.x_embedder.proj.out_channels
+
+        # patch size (timm PatchEmbed has patch_size, but use proj as fallback)
+        if hasattr(self.x_embedder, "patch_size"):
+            p = self.x_embedder.patch_size[0] if isinstance(self.x_embedder.patch_size, (tuple, list)) else int(self.x_embedder.patch_size)
+        else:
+            p = int(self.x_embedder.proj.stride[0])
+
+        Gh, Gw = H // p, W // p
+
+        pe = get_2d_sincos_rect_pos_embed(dim, Gh, Gw)  # (Gh*Gw, dim) numpy
+        self.pos_embed.data = torch.from_numpy(pe).float().unsqueeze(0)  # (1, N, dim)
         self._pos_inited = True
 
-    def unpatchify(self, x):
+    def unpatchify(self, x, H=None, W=None):
         """
-        x: (N, T, patch_size^2 * C)
-        out: (N, C, H, W)
-        """
-        c = self.out_channels
-        p = self.x_embedder.patch_size[0]
-        Gh, Gw = self.x_embedder.grid_size # number of patches along height and width
-        h,w = Gh, Gw
+        x:   (B, N, p^2 * C_out)
+        out: (B, C_out, H, W)
 
-        x = x.reshape(x.shape[0], h, w, p, p, c) # (N, Gh, Gw, p, p, C)
-        x = torch.einsum('nhwpqc->nchpwq', x)   # (N, C, Gh, p, Gw, p)
-        unpatched = x.reshape(shape=(x.shape[0], c, h * p, w * p)) 
-        return unpatched
+        If (H,W) are provided, uses them to infer Gh,Gw, otherwise uses a square grid inferred from N
+        """
+        B, N, D = x.shape
+        c = self.out_channels
+
+        if D % c != 0:
+            raise ValueError(f"Patch dim {D} not divisible by out_channels {c}")
+        pp = D // c
+        p = int(pp ** 0.5)
+        if p * p != pp:
+            raise ValueError(f"Cannot infer patch size from D={D} and c={c} (got pp={pp})")
+
+        # Infer grid size Gh,Gw
+        if H is not None and W is not None:
+            Gh, Gw = H // p, W // p
+            if Gh * Gw != N:
+                raise ValueError(f"N={N} tokens, but H,W imply grid {Gh}x{Gw}={Gh*Gw}")
+        else:
+            Gh = int(N ** 0.5)
+            Gw = N // Gh
+            if Gh * Gw != N:
+                raise ValueError(f"Cannot infer rectangular grid from N={N} (not factorizable nicely)")
+
+        # Reshape patches back to image
+        x = x.reshape(B, Gh, Gw, p, p, c)          # (B, Gh, Gw, p, p, C)
+        x = torch.einsum('bhwpqc->bchpwq', x)      # (B, C, Gh, p, Gw, p)
+        return x.reshape(B, c, Gh * p, Gw * p)     # (B, C, H, W)
 
     def forward(self, s, t, phys_params=None, coords=None):
         """
@@ -255,11 +282,13 @@ class DiT(nn.Module):
         phys_params: (B, P)  optional global physical parameters
         coords:      unused here (coords-as-channels expected already in `s`)
         """
+        B, _, H, W = s.shape
+
         # Patchify + optional positional encoding
-        self._maybe_init_pos()
         tokens = self.x_embedder(s)              # (B, N, C)
         if self.pos_mode == "grid_sincos":
-            tokens = tokens + self.pos_embed     # (1, N, C) broadcast over batch
+            self._maybe_init_pos(H=H, W=W, num_tokens=tokens.shape[1])
+            tokens = tokens + self.pos_embed # (1, N, C) broadcast over batch
 
         # Build conditioning vector from diffusion time + physical paramsS
         t_cond = self.t_embedder(t)              # (B, C)
@@ -275,7 +304,7 @@ class DiT(nn.Module):
 
         # Final AdaLN + linear → patch outputs, then unpatchify
         out_patches = self.final_layer(tokens, cond)  # (B, N, p^2 * C_out)
-        out = self.unpatchify(out_patches)           # (B, C_out, H, W)
+        out = self.unpatchify(out_patches,H=H,W=W)           # (B, C_out, H, W)
         return out
 
 
