@@ -248,35 +248,35 @@ class DiT(nn.Module):
         unpatched = x.reshape(shape=(x.shape[0], c, h * p, w * p)) 
         return unpatched
 
-def forward(self, s, t, phys_params=None, coords=None):
-    """
-    s:           (B, Cx+Cy[, +coord_dim], H, W)
-    t:           (B,)
-    phys_params: (B, P)  optional global physical parameters
-    coords:      unused here (coords-as-channels expected already in `s`)
-    """
-    # Patchify + optional positional encoding
-    self._maybe_init_pos()
-    tokens = self.x_embedder(s)              # (B, N, C)
-    if self.pos_mode == "grid_sincos":
-        tokens = tokens + self.pos_embed     # (1, N, C) broadcast over batch
+    def forward(self, s, t, phys_params=None, coords=None):
+        """
+        s:           (B, Cx+Cy[, +coord_dim], H, W)
+        t:           (B,)
+        phys_params: (B, P)  optional global physical parameters
+        coords:      unused here (coords-as-channels expected already in `s`)
+        """
+        # Patchify + optional positional encoding
+        self._maybe_init_pos()
+        tokens = self.x_embedder(s)              # (B, N, C)
+        if self.pos_mode == "grid_sincos":
+            tokens = tokens + self.pos_embed     # (1, N, C) broadcast over batch
 
-    # Build conditioning vector from diffusion time + physical paramsS
-    t_cond = self.t_embedder(t)              # (B, C)
-    if self.phys_embedder is not None and phys_params is not None:
-        p_cond = self.phys_embedder(phys_params)  # (B, C)
-        cond = t_cond + p_cond
-    else:
-        cond = t_cond
+        # Build conditioning vector from diffusion time + physical paramsS
+        t_cond = self.t_embedder(t)              # (B, C)
+        if self.phys_embedder is not None and phys_params is not None:
+            p_cond = self.phys_embedder(phys_params)  # (B, C)
+            cond = t_cond + p_cond
+        else:
+            cond = t_cond
 
-    # Pass through DiT blocks with AdaLN-Zero conditioning
-    for blk in self.blocks:
-        tokens = blk(tokens, cond)           # (B, N, C)
+        # Pass through DiT blocks with AdaLN-Zero conditioning
+        for blk in self.blocks:
+            tokens = blk(tokens, cond)           # (B, N, C)
 
-    # Final AdaLN + linear → patch outputs, then unpatchify
-    out_patches = self.final_layer(tokens, cond)  # (B, N, p^2 * C_out)
-    out = self.unpatchify(out_patches)           # (B, C_out, H, W)
-    return out
+        # Final AdaLN + linear → patch outputs, then unpatchify
+        out_patches = self.final_layer(tokens, cond)  # (B, N, p^2 * C_out)
+        out = self.unpatchify(out_patches)           # (B, C_out, H, W)
+        return out
 
 
 
