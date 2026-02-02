@@ -166,7 +166,6 @@ class DiT(nn.Module):
         # Patchify
         num_patches = self.x_embedder.num_patches
         # Will use fixed sin-cos embedding:
-        self.pos_embed = nn.Parameter(torch.zeros(1, 1, hidden_size), requires_grad=False)
         self.register_buffer("pos_embed", torch.empty(1, 0, hidden_size), persistent=False)
         self._pos_inited = False
 
