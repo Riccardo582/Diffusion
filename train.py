@@ -38,7 +38,7 @@ class PDEDataset(Dataset):
         super().__init__()
         self.path = path
 
-        # Case A: directory of per-sample .pt files
+        # Directory of .pt files
         if os.path.isdir(path):
             self.mode = "dir"
             self.items = sorted(
@@ -48,7 +48,7 @@ class PDEDataset(Dataset):
                 raise FileNotFoundError(f"No .pt files found in directory: {path}")
             return
 
-        # Case B: single packed .pt dataset file
+        # Single packed .pt file
         if os.path.isfile(path) and path.endswith(".pt"):
             self.mode = "file"
             obj = torch.load(path, map_location="cpu")
@@ -56,7 +56,6 @@ class PDEDataset(Dataset):
             if not isinstance(obj, dict):
                 raise TypeError(f"Expected a dict in {path}, got {type(obj)}")
 
-            # Try common key conventions used in PDE datasets
             def pick(d, keys):
                 for k in keys:
                     v = d.get(k, None)
@@ -193,11 +192,11 @@ def pde_collate(batch):
     x = torch.stack(x_list, dim=0)
     y = torch.stack(y_list, dim=0)
 
-    # If phys is missing, return an empty tensor (B, 0)
+    # If phys is missing, return an empty tensor 
     if all(p is None for p in phys_list):
         phys = torch.empty(len(batch), 0)
     else:
-        # If some are None and some not, this is inconsistent; make it explicit
+        # If some are None and some not, raise inconsistency error
         if any(p is None for p in phys_list):
             raise ValueError("Inconsistent phys: some samples have phys, others are None")
         phys = torch.stack(phys_list, dim=0)
@@ -296,8 +295,11 @@ def main(args):
         sampler.set_epoch(epoch)
         logger.info(f"Beginning epoch {epoch}...")
         for x_cond, y, phys in loader:
-            # x_cond: (B, Cx, H, W)
-            # y:      (B, Cy, H, W)
+            # If no phys params, unsqueeze for consistent input shape
+            if x_cond.dim() == 3:
+                x_cond = x_cond.unsqueeze(1)
+            if y.dim() == 3:
+                y = y.unsqueeze(1)
             x_cond = x_cond.to(device)
             y      = y.to(device)
             phys = phys.to(device).float()
