@@ -287,7 +287,7 @@ class DiT(nn.Module):
         # Patchify + optional positional encoding
         tokens = self.x_embedder(s)              # (B, N, C)
         if self.pos_mode == "grid_sincos":
-            self._maybe_init_pos(H=H, W=W, num_tokens=tokens.shape[1])
+            self._maybe_init_pos(H=H, W=W)
             tokens = tokens + self.pos_embed # (1, N, C) broadcast over batch
 
         # Build conditioning vector from diffusion time + physical paramsS
