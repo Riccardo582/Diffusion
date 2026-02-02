@@ -324,6 +324,12 @@ def main(args):
             # concat conditioning and noisy target along channels
             s = torch.cat([x_cond, y_t], dim=1)                         # (B, Cx+Cy, H, W)
 
+            if rank == 0 and train_steps == 0:
+                m = model.module if hasattr(model, "module") else model
+                print("model type:", type(model))
+                print("inner type:", type(m))
+                print("inner forward:", m.forward)
+
             # forward pass: model predicts ε_hat for the target channels
             eps_hat = model(s, t, phys_params=phys)                     # (B, Cy, H, W) if learn_sigma=False
                                                                     # or (B, 2*Cy, ...) if learn_sigma=True
