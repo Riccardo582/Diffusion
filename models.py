@@ -223,7 +223,7 @@ class DiT(nn.Module):
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
     @torch.no_grad()
-    def _maybe_init_pos(self,H,W):
+    def _maybe_init_pos(self,H=None,W=None):
         """Fill fixed 2D sin-cos positions once, using rectangular (Gh,Gw) from PatchEmbed."""
         if self._pos_inited or self.pos_mode != "grid_sincos":
             return
