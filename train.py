@@ -239,7 +239,7 @@ def main(args):
 
     # Create model:
     model = DiT_models[args.model](
-        input_size=args.ge_size,
+        input_size=args.image_size,
         in_channels=args.cx+args.cy,
         learn_sigma=False,
         pos_mode=args.pos_mode,
