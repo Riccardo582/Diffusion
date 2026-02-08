@@ -239,14 +239,14 @@ def main(args):
 
     # Create model:
     model = DiT_models[args.model](
-        input_size=args.ge_size,
+        input_size=args.image_size,
         in_channels=args.cx+args.cy,
         learn_sigma=False,
         pos_mode=args.pos_mode,
     )
     model.set_out_channels(cy=args.cy)
     
-    # Parameter initialization is done within the DiT constructor
+    # Note that parameter initialization is done within the DiT constructor
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     requires_grad(ema, False)
     device = torch.device("cuda", device)
@@ -254,7 +254,7 @@ def main(args):
     diffusion = create_diffusion(timestep_respacing="")  # default: 1000 steps, linear noise schedule
     logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    # Setup optimizer (default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4):
+    # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
     opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
 
     # Setup data:
@@ -335,9 +335,9 @@ def main(args):
                                                                     # or (B, 2*Cy, ...) if learn_sigma=True
 
             # if learn_sigma=True and the model outputs [eps_hat, other], need to split here.
-            # For pure SimDiffPDE error prediction, set learn_sigma=False in model creation.
+            # For pure SimDiffPDE ε-prediction, set learn_sigma=False in model creation.
 
-            # Multi loss: L2 + L1 on epsilon
+            # SimDiffPDE loss: L2 + L1 on ε
             loss_l2 = F.mse_loss(eps_hat, eps)
             loss_l1 = F.l1_loss(eps_hat, eps)
             loss = loss_l2 + loss_l1
