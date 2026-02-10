@@ -105,7 +105,7 @@ def main(args):
     model.load_state_dict(state_dict, strict=True)
     model.to(device).eval()
 
-    diffusion = create_diffusion(str(args.num_sampling_steps))
+    diffusion = create_diffusion(str(args.num_sampling_steps), learn_sigma=False)
 
     # Output
     os.makedirs(args.sample_dir, exist_ok=True)
