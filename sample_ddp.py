@@ -91,31 +91,14 @@ def main(args):
     )
 
     # Load model (supports square; attempts rectangular if implementation supports it)
-    try:
-        model = DiT_models[args.model](
-            input_size=(args.H, args.W),
-            in_channels=args.cx + args.cy,
-            learn_sigma=False,
-            pos_mode=args.pos_mode,
-        ).to(device)
-    except TypeError:
-        if args.H != args.W:
-            raise ValueError("This DiT implementation expects square input_size. Set --H == --W.")
-        model = DiT_models[args.model](
-            input_size=args.H,
-            in_channels=args.cx + args.cy,
-            learn_sigma=False,
-            pos_mode=args.pos_mode,
-        ).to(device)
-
-    state_dict = _load_train_ckpt(args.ckpt)
-
     model = DiT_models[args.model](
-        input_size=args.image_size,          
+        input_size=args.H,
         in_channels=args.cx + args.cy,
         learn_sigma=False,
         pos_mode=args.pos_mode,
     ).to(device)
+
+    state_dict = _load_train_ckpt(args.ckpt)
 
     model.set_out_channels(cy=args.cy)       # REQUIRED to match train.py checkpoints
     state_dict = _load_train_ckpt(args.ckpt)
