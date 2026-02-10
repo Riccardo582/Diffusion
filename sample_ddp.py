@@ -20,7 +20,6 @@ import numpy as np
 
 from train import pde_collate, PDEDataset
 from diffusion import create_diffusion
-from download import find_model
 from models import DiT_models
 
 
@@ -33,109 +32,186 @@ def ensure_4d(x):
     return x
 
 
+def _load_train_ckpt(path: str):
+    ckpt = torch.load(path, map_location="cpu")
+    if isinstance(ckpt, dict):
+        if "ema" in ckpt and isinstance(ckpt["ema"], dict):
+            return ckpt["ema"]
+        if "model" in ckpt and isinstance(ckpt["model"], dict):
+            return ckpt["model"]
+        if "state_dict" in ckpt and isinstance(ckpt["state_dict"], dict):
+            return ckpt["state_dict"]
+        return ckpt
+    return ckpt
+
+
 def main(args):
     """
-    Run sampling.
+    Run sampling for PDE/CFD fields using a checkpoint produced by train.py.
     """
-    torch.backends.cuda.matmul.allow_tf32 = args.tf32  # True: fast but may lead to some small numerical differences
-    assert torch.cuda.is_available(), "Sampling with DDP requires at least one GPU. sample.py supports CPU-only usage"
+    assert torch.cuda.is_available(), "Sampling with DDP requires at least one GPU."
     torch.set_grad_enabled(False)
 
-    # Setup DDP:
+    # TF32 new API (avoids deprecation warning)
+    try:
+        torch.backends.cuda.matmul.fp32_precision = "tf32" if args.tf32 else "ieee"
+        torch.backends.cudnn.conv.fp32_precision = "tf32" if args.tf32 else "ieee"
+    except Exception:
+        pass
+
+    # Setup DDP (torchrun provides env vars)
     dist.init_process_group("nccl")
     rank = dist.get_rank()
-    device = rank % torch.cuda.device_count()
-    seed = args.global_seed * dist.get_world_size() + rank
+    world = dist.get_world_size()
+
+    local_rank = int(os.environ.get("LOCAL_RANK", str(rank % torch.cuda.device_count())))
+    torch.cuda.set_device(local_rank)
+    device = torch.device("cuda", local_rank)
+
+    seed = args.global_seed * world + rank
     torch.manual_seed(seed)
-    torch.cuda.set_device(device)
-    print(f"Starting rank={rank}, seed={seed}, world_size={dist.get_world_size()}.")
+    print(f"Starting rank={rank}, seed={seed}, world_size={world}.")
 
     if args.ckpt is None:
-       raise ValueError("Please specify a checkpoint path with --ckpt")
-    dataset = torch.load(args.dataset_pt)
-    cond_all = dataset["x_cond"]
-    y_all    = dataset["y"]
-   
-    ds = PDEDataset(args.data)
-    
-    sampler = DistributedSampler(ds, num_replicas=dist.get_world_size(), rank=rank, shuffle=True, seed=args.global_seed)
+        raise ValueError("Please specify a checkpoint path with --ckpt")
+
+    # Dataset + loader (conditioning batches)
+    ds = PDEDataset(args.dataset_pt)
+    sampler = DistributedSampler(ds, num_replicas=world, rank=rank, shuffle=True, seed=args.global_seed)
     loader = DataLoader(
         ds,
-        batch_size=int(args.global_batch_size // dist.get_world_size()),
+        batch_size=args.per_proc_batch_size,
         shuffle=False,
         sampler=sampler,
         num_workers=args.num_workers,
         pin_memory=True,
         drop_last=True,
-        collate_fn=pde_collate, 
+        collate_fn=pde_collate,
     )
-    # Load model:
-    model = DiT_models[args.model](
-        input_size=args.image_size,
-        in_channels=args.cx+args.cy,
-        learn_sigma=False,
-        pos_mode=args.pos_mode,
-    ).to(device)
 
-    # load a custom checkpoint from train.py:
-    ckpt_path = args.ckpt
-    state_dict = find_model(ckpt_path)
+    # Load model (supports square; attempts rectangular if implementation supports it)
+    try:
+        model = DiT_models[args.model](
+            input_size=(args.H, args.W),
+            in_channels=args.cx + args.cy,
+            learn_sigma=False,
+            pos_mode=args.pos_mode,
+        ).to(device)
+    except TypeError:
+        if args.H != args.W:
+            raise ValueError("This DiT implementation expects square input_size. Set --H == --W.")
+        model = DiT_models[args.model](
+            input_size=args.H,
+            in_channels=args.cx + args.cy,
+            learn_sigma=False,
+            pos_mode=args.pos_mode,
+        ).to(device)
 
-    if isinstance(args.ckpt, dict) and "model" in args.ckpt:
-        state_dict = args.ckpt["model"]
-    else:
-        state_dict = args.ckpt
+    state_dict = _load_train_ckpt(args.ckpt)
+    model.load_state_dict(state_dict, strict=True)
+    model.to(device).eval()
 
-    model.load_state_dict(state_dict)
-    model.to(device).eval()  # important!
     diffusion = create_diffusion(str(args.num_sampling_steps))
 
-    # Create folder to save samples:
+    # Output
     os.makedirs(args.sample_dir, exist_ok=True)
     dist.barrier()
 
-    # Figure out how many samples we need to generate on each GPU and how many iterations we need to run:
+    # Sampling counts
     n = args.per_proc_batch_size
-    global_batch_size = n * dist.get_world_size()
-
-    # To make things evenly-divisible, we'll sample a bit more than we need and then discard the extra samples:
+    global_batch_size = n * world
     total_samples = int(math.ceil(args.num_fid_samples / global_batch_size) * global_batch_size)
     if rank == 0:
-        print(f"Total number of images that will be sampled: {total_samples}")
-    per_rank = total_samples // dist.get_world__size()
+        print(f"Total number of fields that will be sampled: {total_samples}")
+
+    per_rank = total_samples // world
     iterations = per_rank // n
+
     pbar = range(iterations)
     if rank == 0:
         pbar = tqdm(pbar, "Sampling fields")
-    saved = 0
+
+    # Keep a persistent iterator
+    epoch = 0
+    data_iter = iter(loader)
+
+    # Accumulate per-rank outputs
+    x_list, y_true_list, y_samp_list = [], [], []
+
+    # Model wrapper for diffusion sampling (predicts epsilon for y-channels)
+    def sample_fn(x_t, t, x_cond=None, phys=None):
+        s = torch.cat([x_cond, x_t], dim=1)
+        if phys is None:
+            return model(s, t)
+        return model(s, t, phys_params=phys)
+
     for _ in pbar:
-        # get a conditioning batch
         try:
-            x_cond, _ = next(iter(loader))  # simplest, but re-inits iterator; better keep iterator outside
+            batch = next(data_iter)
         except StopIteration:
-            sampler.set_epoch(sampler.epoch + 1)
-            x_cond, _ = next(iter(loader))
+            epoch += 1
+            sampler.set_epoch(epoch)
+            data_iter = iter(loader)
+            batch = next(data_iter)
 
-        # Sample images:
+        if isinstance(batch, (list, tuple)) and len(batch) == 3:
+            x_cond, y, phys = batch
+        elif isinstance(batch, (list, tuple)) and len(batch) == 2:
+            x_cond, y = batch
+            phys = None
+        else:
+            raise RuntimeError("pde_collate must return (x_cond, y) or (x_cond, y, phys).")
+
+        x_cond = ensure_4d(x_cond).to(device, non_blocking=True)
+        y = ensure_4d(y).to(device, non_blocking=True)
+        if phys is not None:
+            phys = phys.to(device, non_blocking=True)
+
+        # Enforce expected spatial size
+        if x_cond.shape[-2:] != (args.H, args.W) or y.shape[-2:] != (args.H, args.W):
+            raise ValueError(
+                f"Batch spatial size mismatch: x_cond {tuple(x_cond.shape[-2:])}, y {tuple(y.shape[-2:])}, "
+                f"expected {(args.H, args.W)}"
+            )
+
+        # Start from noise in target space (Cy,H,W)
+        z = torch.randn((n, args.cy, args.H, args.W), device=device)
+
+        model_kwargs = {"x_cond": x_cond, "phys": phys}
         samples = diffusion.p_sample_loop(
-            sample_fn, z.shape, z, clip_denoised=False, model_kwargs=model_kwargs, progress=False, device=device
+            sample_fn,
+            z.shape,
+            z,
+            clip_denoised=False,
+            model_kwargs=model_kwargs,
+            progress=False,
+            device=device,
         )
-        if using_cfg:
-            samples, _ = samples.chunk(2, dim=0)  # Remove null class samples
 
-        samples = torch.clamp(127.5 * samples + 128.0, 0, 255).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
+        x_list.append(x_cond.detach().cpu().float())
+        y_true_list.append(y.detach().cpu().float())
+        y_samp_list.append(samples.detach().cpu().float())
 
-        # Save samples to disk as individual .png files
-        for i, sample in enumerate(samples):
-            index = i * dist.get_world_size() + rank + total
-            Image.fromarray(sample).save(f"{sample_folder_dir}/{index:06d}.png")
-        total += global_batch_size
+    # Truncate extras (due to divisibility padding)
+    x_out = torch.cat(x_list, dim=0).numpy()[:per_rank]
+    y_true_out = torch.cat(y_true_list, dim=0).numpy()[:per_rank]
+    y_samp_out = torch.cat(y_samp_list, dim=0).numpy()[:per_rank]
 
-    # Make sure all processes have finished saving their samples before attempting to convert to .npz
-    dist.barrier()
-    if rank == 0:
-        create_npz_from_sample_folder(sample_folder_dir, args.num_fid_samples)
-        print("Done.")
+    out_path = os.path.join(args.sample_dir, f"samples_rank{rank:04d}.npz")
+    np.savez_compressed(
+        out_path,
+        x_cond=x_out,
+        y_true=y_true_out,
+        y_sample=y_samp_out,
+        H=args.H,
+        W=args.W,
+        cx=args.cx,
+        cy=args.cy,
+        model=args.model,
+        ckpt=args.ckpt,
+        seed=seed,
+    )
+
     dist.barrier()
     dist.destroy_process_group()
 
@@ -146,13 +222,25 @@ if __name__ == "__main__":
     parser.add_argument("--sample-dir", type=str, default="samples")
     parser.add_argument("--per-proc-batch-size", type=int, default=32)
     parser.add_argument("--num-fid-samples", type=int, default=50_000)
-    parser.add_argument("--image-size", type=int, choices=[256, 512], default=256)
-    parser.add_argument("--num-classes", type=int, default=1000)
     parser.add_argument("--num-sampling-steps", type=int, default=250)
     parser.add_argument("--global-seed", type=int, default=0)
-    parser.add_argument("--tf32", action=argparse.BooleanOptionalAction, default=True,
-                        help="By default, use TF32 matmuls. This massively accelerates sampling on Ampere GPUs.")
-    parser.add_argument("--ckpt", type=str, default=None,
-                        help="Optional path to a DiT checkpoint (default: auto-download a pre-trained DiT-XL/2 model).")
+    parser.add_argument("--tf32", action=argparse.BooleanOptionalAction, default=True)
+
+    # explicit spatial size
+    parser.add_argument("--H", type=int, required=True)
+    parser.add_argument("--W", type=int, required=True)
+
+    parser.add_argument("--cx", type=int, required=True)
+    parser.add_argument("--cy", type=int, required=True)
+    parser.add_argument("--pos-mode", type=str, default="learned")
+
+    # Dataset and checkpoint
+    parser.add_argument("--dataset-pt", dest="dataset_pt", type=str, required=True,
+                        help="Path to the .pt dataset used by PDEDataset")
+    parser.add_argument("--ckpt", type=str, required=True,
+                        help="Path to a checkpoint produced by train.py ")
+
+    parser.add_argument("--num-workers", type=int, default=2)
+
     args = parser.parse_args()
     main(args)
