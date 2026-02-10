@@ -64,9 +64,10 @@ def main(args):
     rank = dist.get_rank()
     world = dist.get_world_size()
 
-    local_rank = int(os.environ.get("LOCAL_RANK", str(rank % torch.cuda.device_count())))
+    local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
+
 
     seed = args.global_seed * world + rank
     torch.manual_seed(seed)
@@ -107,6 +108,16 @@ def main(args):
             pos_mode=args.pos_mode,
         ).to(device)
 
+    state_dict = _load_train_ckpt(args.ckpt)
+
+    model = DiT_models[args.model](
+        input_size=args.image_size,          
+        in_channels=args.cx + args.cy,
+        learn_sigma=False,
+        pos_mode=args.pos_mode,
+    ).to(device)
+
+    model.set_out_channels(cy=args.cy)       # REQUIRED to match train.py checkpoints
     state_dict = _load_train_ckpt(args.ckpt)
     model.load_state_dict(state_dict, strict=True)
     model.to(device).eval()
