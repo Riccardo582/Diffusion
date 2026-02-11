@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
 import numpy as np
 
-from train import pde_collate, PDEDataset
+from train import pde_collate, PDEDataset, multiscale_noise, gather_alpha_bar
 from diffusion import create_diffusion
 from models import DiT_models
 
@@ -176,7 +176,7 @@ def main(args):
             sample_fn,
             z.shape,
             z,
-            clip_denoised=False,
+            clip_denoised=True,
             model_kwargs=model_kwargs,
             progress=False,
             device=device,
@@ -185,6 +185,18 @@ def main(args):
         x_list.append(x_cond.detach().cpu().float())
         y_true_list.append(y.detach().cpu().float())
         y_samp_list.append(samples.detach().cpu().float())
+    with torch.no_grad():
+        B = z.shape[0]
+        t = torch.randint(0, diffusion.num_timesteps, (B,), device=device, dtype=torch.long)
+        # build a forward-noised y_t using the SAME eps distribution as training
+        eps = multiscale_noise(y)  # must be exactly the same function used in training
+        alpha_bar = gather_alpha_bar(diffusion, t, device)
+        y_t = alpha_bar.sqrt() * y + (1.0 - alpha_bar).sqrt() * eps
+        s = torch.cat([x_cond, y_t], dim=1)
+        eps_hat = model(s, t, phys_params=phys)
+
+        print("eps std:", eps.std().item(), "eps_hat std:", eps_hat.std().item())
+
 
     # Truncate extras (due to divisibility padding)
     x_out = torch.cat(x_list, dim=0).numpy()[:per_rank]
