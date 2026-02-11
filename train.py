@@ -147,25 +147,38 @@ def create_logger(logging_dir):
         logger.addHandler(logging.NullHandler())
     return logger
 
-def multiscale_noise(y,scales=(1,2,4,8),weights=None):
-    '''Implements multiscale noise
-    y: (B,C,H,W) tensor
-    scales: list of scales (integers)
-    weights: list of weights (floats), same length as scales
-    returns: (B,C,H,W) tensor of multiscale noise
-    '''
+def multiscale_noise(y, k=4, alpha=0.5):
+    """
+    Multi-scale noise 
+    y: (B,C,H,W) or (B,H,W)
+    returns: (B,C,H,W) noise with ~unit std per-sample
+    """
     if y.dim() == 3:
-        y = y.unsqueeze(1)  # (B,1,H,W)
-    B,C,H,W = y.shape
-    if weights is None:
-        weights = [1/len(scales)]*len(scales) # equal weights
-    out = 0.0
-    for s,w in zip(scales,weights):
-        h, wdt = max(1, H // s), max(1, W // s) 
-        eps = torch.randn(B, C, h, wdt, device=y.device)
-        eps = torch.nn.functional.interpolate(eps, size=(H,W), mode='bilinear', align_corners=False)
-        out = out + w*eps
-    return out
+        y = y.unsqueeze(1)
+    B, C, H, W = y.shape
+
+    # Initialize with base Gaussian at full resolution
+    E = torch.randn(B, C, H, W, device=y.device)
+
+    # Random scaling factor r 
+    r = (torch.rand((), device=y.device) * 2.0 + 2.0).item()
+
+    h_i, w_i = H, W
+    for i in range(k):
+        if i > 0:
+            h_i = max(1, int(H / (r ** i)))
+            w_i = max(1, int(W / (r ** i)))
+
+        if h_i == 1 or w_i == 1:
+            break
+
+        eps = torch.randn(B, C, h_i, w_i, device=y.device)
+        eps = F.interpolate(eps, size=(H, W), mode="bilinear", align_corners=False)
+        E = E + (alpha ** i) * eps
+
+    # Standardize per-sample to unit std (matches the intent of returning std(E))
+    E = E / (E.flatten(1).std(dim=1, keepdim=True).view(B, 1, 1, 1) + 1e-8)
+    return E
 
 def gather_alpha_bar(diffusion,t,device):
     """
