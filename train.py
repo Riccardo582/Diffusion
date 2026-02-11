@@ -151,7 +151,7 @@ def multiscale_noise(y, k=4, alpha=0.5):
     """
     Multi-scale noise 
     y: (B,C,H,W) or (B,H,W)
-    returns: (B,C,H,W) noise with ~unit std per-sample
+    returns: (B,C,H,W) noise
     """
     if y.dim() == 3:
         y = y.unsqueeze(1)
@@ -160,11 +160,13 @@ def multiscale_noise(y, k=4, alpha=0.5):
     # Initialize with base Gaussian at full resolution
     E = torch.randn(B, C, H, W, device=y.device)
 
-    # Random scaling factor r 
-    r = (torch.rand((), device=y.device) * 2.0 + 2.0).item()
+   
+    
 
     h_i, w_i = H, W
     for i in range(k):
+        # Random scaling factor r 
+        r = (torch.rand((), device=y.device) * 2.0 + 2.0).item()
         if i > 0:
             h_i = max(1, int(H / (r ** i)))
             w_i = max(1, int(W / (r ** i)))

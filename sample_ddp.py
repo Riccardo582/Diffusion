@@ -160,16 +160,7 @@ def main(args):
         y = ensure_4d(y).to(device, non_blocking=True)
         if phys is not None:
             phys = phys.to(device, non_blocking=True)
-        with torch.no_grad():
-            B = z.shape[0]
-            t = torch.randint(0, diffusion.num_timesteps, (B,), device=device, dtype=torch.long)
-            # build a forward-noised y_t using the SAME eps distribution as training
-            eps = multiscale_noise(y)  # must be exactly the same function used in training
-            alpha_bar = gather_alpha_bar(diffusion, t, device)
-            y_t = alpha_bar.sqrt() * y + (1.0 - alpha_bar).sqrt() * eps
-            s = torch.cat([x_cond, y_t], dim=1)
-            eps_hat = model(s, t, phys_params=phys)
-            print("eps std:", eps.std().item(), "eps_hat std:", eps_hat.std().item())
+        
         # Enforce expected spatial size
         if x_cond.shape[-2:] != (args.H, args.W) or y.shape[-2:] != (args.H, args.W):
             raise ValueError(
