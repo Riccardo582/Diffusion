@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
 import numpy as np
 
-from train import pde_collate, PDEDataset, multiscale_noise, gather_alpha_bar
+from train import pde_collate, PDEDataset, multiscale_noise
 from diffusion import create_diffusion
 from models import DiT_models
 
@@ -169,7 +169,9 @@ def main(args):
             )
 
         # Start from noise in target space (Cy,H,W)
-        z = torch.randn((n, args.cy, args.H, args.W), device=device)
+        z0 = torch.zeros((n, args.cy, args.H, args.W), device=device)
+        z  = multiscale_noise(z0)   
+
 
         model_kwargs = {"x_cond": x_cond, "phys": phys}
         samples = diffusion.p_sample_loop(
