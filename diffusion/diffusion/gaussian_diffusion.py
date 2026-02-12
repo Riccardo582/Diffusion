@@ -537,7 +537,7 @@ class GaussianDiffusion:
             out = self.condition_score(cond_fn, out, x, t, model_kwargs=model_kwargs)
 
         # Usually our model outputs epsilon, but we re-derive it
-        # in case we used x_start or x_prev prediction
+        # in case we used x_start or x_prev prediction.
         eps = self._predict_eps_from_xstart(x, t, out["pred_xstart"])
 
         alpha_bar = _extract_into_tensor(self.alphas_cumprod, t, x.shape)
@@ -547,6 +547,7 @@ class GaussianDiffusion:
             * th.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar))
             * th.sqrt(1 - alpha_bar / alpha_bar_prev)
         )
+        # Equation 12.
         noise = th.randn_like(x)
         mean_pred = (
             out["pred_xstart"] * th.sqrt(alpha_bar_prev)
@@ -583,13 +584,15 @@ class GaussianDiffusion:
         )
         if cond_fn is not None:
             out = self.condition_score(cond_fn, out, x, t, model_kwargs=model_kwargs)
+        # Usually our model outputs epsilon, but we re-derive it
+        # in case we used x_start or x_prev prediction.
         eps = (
             _extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x.shape) * x
             - out["pred_xstart"]
         ) / _extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x.shape)
         alpha_bar_next = _extract_into_tensor(self.alphas_cumprod_next, t, x.shape)
 
-    
+        # Equation 12. reversed
         mean_pred = out["pred_xstart"] * th.sqrt(alpha_bar_next) + th.sqrt(1 - alpha_bar_next) * eps
 
         return {"sample": mean_pred, "pred_xstart": out["pred_xstart"]}

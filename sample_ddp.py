@@ -52,7 +52,7 @@ def main(args):
     assert torch.cuda.is_available(), "Sampling with DDP requires at least one GPU."
     torch.set_grad_enabled(False)
 
-    # TF32 new API (avoids deprecation warning)
+    # TF32 new API 
     try:
         torch.backends.cuda.matmul.fp32_precision = "tf32" if args.tf32 else "ieee"
         torch.backends.cudnn.conv.fp32_precision = "tf32" if args.tf32 else "ieee"
@@ -90,7 +90,7 @@ def main(args):
         collate_fn=pde_collate,
     )
 
-    # Load model (supports square; attempts rectangular if implementation supports it)
+    # Load model 
     model = DiT_models[args.model](
         input_size=args.H,
         in_channels=args.cx + args.cy,
@@ -100,7 +100,7 @@ def main(args):
 
     state_dict = _load_train_ckpt(args.ckpt)
 
-    model.set_out_channels(cy=args.cy)       # REQUIRED to match train.py checkpoints
+    model.set_out_channels(cy=args.cy)       
     state_dict = _load_train_ckpt(args.ckpt)
     model.load_state_dict(state_dict, strict=True)
     model.to(device).eval()
@@ -176,7 +176,7 @@ def main(args):
             sample_fn,
             z.shape,
             z,
-            clip_denoised=True,
+            clip_denoised=False,
             model_kwargs=model_kwargs,
             progress=False,
             device=device,
