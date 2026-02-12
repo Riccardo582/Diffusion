@@ -172,9 +172,13 @@ def main(args):
         z0 = torch.zeros((n, args.cy, args.H, args.W), device=device)
         z  = multiscale_noise(z0)   
 
+        if phys is not None:
+            phys = phys.to(device, non_blocking=True).float()
+            if phys.numel() == 0:
+                phys = None
 
         model_kwargs = {"x_cond": x_cond, "phys": phys}
-        samples = diffusion.p_sample_loop(
+        samples = diffusion.ddim_sample_loop(
             sample_fn,
             z.shape,
             z,
@@ -182,7 +186,9 @@ def main(args):
             model_kwargs=model_kwargs,
             progress=False,
             device=device,
+            eta=0.0,
         )
+
 
         x_list.append(x_cond.detach().cpu().float())
         y_true_list.append(y.detach().cpu().float())
