@@ -212,33 +212,9 @@ def main(args):
             print("x_cond mean/std:", x_cond.mean().item(), x_cond.std().item())
             print("y mean/std:", y.mean().item(), y.std().item())
         #test one step of the model to check it is working and matches training signature
-        if rank == 0 and epoch == 0 and len(x_list) == 0:
-            from diffusion.gaussian_diffusion import _extract_into_tensor
-
-            B = y.shape[0]
-            t_test = torch.randint(0, diffusion.num_timesteps, (B,), device=device, dtype=torch.long)
-
-            eps = multiscale_noise(y)  # must match training
-            ab  = _extract_into_tensor(diffusion.alphas_cumprod, t_test, y.shape)
-            y_t = ab.sqrt() * y + (1.0 - ab).sqrt() * eps
-
-            s = torch.cat([x_cond, y_t], dim=1)
-            eps_hat = model(s, t_test)  # match training signature (no phys)
-
-            y0_hat = (y_t - (1.0 - ab).sqrt() * eps_hat) / (ab.sqrt() + 1e-8)
-
-            rel_y0 = (y0_hat - y).pow(2).mean().sqrt() / (y.pow(2).mean().sqrt() + 1e-8)
-            rel_eps = (eps_hat - eps).pow(2).mean().sqrt() / (eps.pow(2).mean().sqrt() + 1e-8)
-            std_ratio = eps_hat.std() / (eps.std() + 1e-8)
-
-            print("ONE-STEP TEST -> rel_y0:", float(rel_y0),
-                "rel_eps:", float(rel_eps),
-                "std_ratio:", float(std_ratio))
-
+        
             
-            dist.barrier()
-            dist.destroy_process_group()
-            return
+          
         
         # Start from noise in target space (Cy,H,W)
         z0 = torch.zeros((n, args.cy, args.H, args.W), device=device)
