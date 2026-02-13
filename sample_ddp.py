@@ -17,7 +17,7 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
 import numpy as np
-
+from collections import OrderedDict
 from train import pde_collate, PDEDataset, multiscale_noise
 from diffusion import create_diffusion
 from models import DiT_models
@@ -32,17 +32,55 @@ def ensure_4d(x):
     return x
 
 
-def _load_train_ckpt(path: str):
+def _strip_prefix(state_dict, prefixes=("module.", "_orig_mod.")):
+    if not isinstance(state_dict, dict):
+        return state_dict
+    out = OrderedDict()
+    for k, v in state_dict.items():
+        nk = k
+        for p in prefixes:
+            if nk.startswith(p):
+                nk = nk[len(p):]
+        out[nk] = v
+    return out
+
+def load_ckpt(path: str, prefer_ema: bool = True):
+    """
+    Returns:
+      state_dict: cleaned model weights dict (no module/_orig_mod prefixes)
+      train_args: ckpt['args'] if present else None
+      which:      string describing what was loaded ('ema'|'model'|'state_dict'|'raw')
+      ckpt:       full checkpoint dict (for debugging)
+    """
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
+
+    train_args = ckpt.get("args", None) if isinstance(ckpt, dict) else None
+
+    which = "raw"
+    state = None
+
     if isinstance(ckpt, dict):
-        if "ema" in ckpt and isinstance(ckpt["ema"], dict):
-            return ckpt["ema"]
-        if "model" in ckpt and isinstance(ckpt["model"], dict):
-            return ckpt["model"]
-        if "state_dict" in ckpt and isinstance(ckpt["state_dict"], dict):
-            return ckpt["state_dict"]
-        return ckpt
-    return ckpt
+        # pick weights deterministically
+        if prefer_ema and isinstance(ckpt.get("ema", None), dict):
+            state = ckpt["ema"]; which = "ema"
+        elif isinstance(ckpt.get("model", None), dict):
+            state = ckpt["model"]; which = "model"
+        elif isinstance(ckpt.get("state_dict", None), dict):
+            state = ckpt["state_dict"]; which = "state_dict"
+        else:
+            # sometimes ckpt itself is a state_dict
+            # detect by checking for tensor values
+            is_sd = any(torch.is_tensor(v) for v in ckpt.values()) if len(ckpt) else False
+            if is_sd:
+                state = ckpt; which = "raw_state_dict"
+            else:
+                raise ValueError(f"Checkpoint dict has no weights keys. Keys: {list(ckpt.keys())}")
+
+    else:
+        raise TypeError(f"Unsupported checkpoint type: {type(ckpt)}")
+
+    state = _strip_prefix(state)
+    return state, train_args, which, ckpt
 
 
 def main(args):
@@ -101,7 +139,8 @@ def main(args):
 
     model.set_out_channels(cy=args.cy)  
 
-    state_dict = _load_train_ckpt(args.ckpt)
+    state_dict, train_args, which, ckpt = load_ckpt(args.ckpt, prefer_ema=True)
+    print("loaded:", which)
     model.load_state_dict(state_dict, strict=True)
 
     model = model.to(device).eval() 
@@ -169,6 +208,9 @@ def main(args):
                 f"Batch spatial size mismatch: x_cond {tuple(x_cond.shape[-2:])}, y {tuple(y.shape[-2:])}, "
                 f"expected {(args.H, args.W)}"
             )
+        if epoch == 0 and rank == 0:
+            print("x_cond mean/std:", x_cond.mean().item(), x_cond.std().item())
+            print("y mean/std:", y.mean().item(), y.std().item())
         #test one step of the model to check it is working and matches training signature
         if rank == 0 and epoch == 0 and len(x_list) == 0:
             from diffusion.gaussian_diffusion import _extract_into_tensor

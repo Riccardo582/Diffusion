@@ -391,6 +391,9 @@ def main(args):
                 running_loss = 0
                 log_steps = 0
                 start_time = time()
+            if epoch == 0 and train_steps == 0 and rank == 0:
+                print("x_cond mean/std:", x_cond.mean().item(), x_cond.std().item())
+                print("y mean/std:", y.mean().item(), y.std().item())
 
             # Save DiT checkpoint:
             if train_steps % args.ckpt_every == 0 and train_steps > 0:
