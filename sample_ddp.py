@@ -96,7 +96,7 @@ def main(args):
         in_channels=args.cx + args.cy,
         learn_sigma=False,
         pos_mode=args.pos_mode,
-        n_phys_params=args.phys_dim, 
+ 
     ).cpu()  
 
     model.set_out_channels(cy=args.cy)  
