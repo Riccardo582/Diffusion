@@ -1,6 +1,5 @@
-## Scalable Diffusion Models with Transformers (DiT)<br><sub>Official PyTorch Implementation</sub>
+## Machine Learning for Simulation: Diffusion models for Fluid Field Prediction
 
-### [Paper](http://arxiv.org/abs/2212.09748) | [Project Page](https://www.wpeebles.com/DiT) | Run DiT-XL/2 [![Hugging Face Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-blue)](https://huggingface.co/spaces/wpeebles/DiT) [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](http://colab.research.google.com/github/facebookresearch/DiT/blob/main/run_DiT.ipynb) <a href="https://replicate.com/arielreplicate/scalable_diffusion_with_transformers"><img src="https://replicate.com/arielreplicate/scalable_diffusion_with_transformers/badge"></a>
 
 ![DiT samples](visuals/sample_grid_0.png)
 
@@ -20,7 +19,11 @@ achieving a state-of-the-art FID of 2.27 on the latter.
 
 This repository contains:
 
-* 🪐 A simple PyTorch [implementation](models.py) of DiT
+* A simple PyTorch implementation of the Diffusion Transformer from [Peebles et al](https://www.wpeebles.com/DiT)<br>
+> [William Peebles](https://www.wpeebles.com), [Saining Xie](https://www.sainingxie.com)
+> <br>UC Berkeley, New York University<br>
+
+
 * ⚡️ Pre-trained class-conditional DiT models trained on ImageNet (512x512 and 256x256)
 * 💥 A self-contained [Hugging Face Space](https://huggingface.co/spaces/wpeebles/DiT) and [Colab notebook](http://colab.research.google.com/github/facebookresearch/DiT/blob/main/run_DiT.ipynb) for running pre-trained DiT-XL/2 models
 * 🛸 A DiT [training script](train.py) using PyTorch DDP

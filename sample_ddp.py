@@ -98,12 +98,10 @@ def main(args):
         pos_mode=args.pos_mode,
     ).to(device)
 
-    state_dict = _load_train_ckpt(args.ckpt)
-
-    model.set_out_channels(cy=args.cy)       
+    model.set_out_channels(cy=args.cy)
     state_dict = _load_train_ckpt(args.ckpt)
     model.load_state_dict(state_dict, strict=True)
-    model.to(device).eval()
+    model.eval()
 
     diffusion = create_diffusion(timestep_respacing="", learn_sigma=False)
 
@@ -181,13 +179,14 @@ def main(args):
         samples = diffusion.ddim_sample_loop(
             sample_fn,
             z.shape,
-            z,
+            noise=z,                
             clip_denoised=False,
             model_kwargs=model_kwargs,
             progress=False,
             device=device,
-            eta=0.0,
-        )
+            eta=0.0,                
+       )
+
 
 
         x_list.append(x_cond.detach().cpu().float())
