@@ -89,19 +89,22 @@ def main(args):
         drop_last=True,
         collate_fn=pde_collate,
     )
-
-    # Load model 
+    
+    # load model
     model = DiT_models[args.model](
         input_size=args.H,
         in_channels=args.cx + args.cy,
         learn_sigma=False,
         pos_mode=args.pos_mode,
-    ).to(device)
+    ).cpu()  
 
-    model.set_out_channels(cy=args.cy)
+    model.set_out_channels(cy=args.cy)  
+
     state_dict = _load_train_ckpt(args.ckpt)
     model.load_state_dict(state_dict, strict=True)
-    model.eval()
+
+    model = model.to(device).eval() 
+
 
     diffusion = create_diffusion(timestep_respacing="", learn_sigma=False)
 
