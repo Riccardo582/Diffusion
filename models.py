@@ -216,11 +216,12 @@ class DiT(nn.Module):
             embed_dim = self.x_embedder.proj.out_channels
         self.final_layer = FinalLayer(embed_dim, self.patch_size, self.out_channels)
 
-        # Zero-init final heads (AdaLN-Zero architecture)
+        # Zero-init final heads (AdaLN-Zero architecture), but initialize slightly nonzero weights to help convergence
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
-        nn.init.constant_(self.final_layer.linear.weight, 0)
+        nn.init.normal_(self.final_layer.linear.weight, std=0.02)
         nn.init.constant_(self.final_layer.linear.bias, 0)
+
 
     @torch.no_grad()
     def _maybe_init_pos(self,H=None,W=None):
