@@ -53,7 +53,9 @@ def load_ckpt(path: str, prefer_ema: bool = True):
       ckpt:       full checkpoint dict (for debugging)
     """
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
-
+    ta = ckpt["args"]
+    print("CKPT:", args.ckpt)
+    print("ckpt args:", ta.model, ta.image_size, ta.cx, ta.cy, ta.pos_mode, "phys_dim", getattr(ta,"phys_dim",0))
     train_args = ckpt.get("args", None) if isinstance(ckpt, dict) else None
 
     which = "raw"
@@ -212,8 +214,26 @@ def main(args):
             print("x_cond mean/std:", x_cond.mean().item(), x_cond.std().item())
             print("y mean/std:", y.mean().item(), y.std().item())
         #test one step of the model to check it is working and matches training signature
-        
-            
+        from diffusion.gaussian_diffusion import _extract_into_tensor
+
+        if rank == 0 and (_ % 8 == 0):
+            B = y.shape[0]
+            t_test = torch.randint(0, diffusion.num_timesteps, (B,), device=device, dtype=torch.long)
+
+            eps = multiscale_noise(y)
+            ab  = _extract_into_tensor(diffusion.alphas_cumprod, t_test, y.shape)
+            y_t = ab.sqrt() * y + (1.0 - ab).sqrt() * eps
+
+            s = torch.cat([x_cond, y_t], dim=1)
+            eps_hat = model(s, t_test, phys_params=None)
+
+            cos = torch.nn.functional.cosine_similarity(eps_hat.flatten(1), eps.flatten(1), dim=1).mean()
+            rel = (eps_hat - eps).pow(2).mean().sqrt() / (eps.pow(2).mean().sqrt() + 1e-8)
+            ratio = eps_hat.std() / (eps.std() + 1e-8)
+
+            print("ONE-STEP cos:", float(cos), "rel:", float(rel), "std_ratio:", float(ratio))
+
+                    
           
         
         # Start from noise in target space (Cy,H,W)
@@ -237,6 +257,8 @@ def main(args):
             eta=0.0,                
        )
 
+        print("SAMP min/max/std:", float(samples.min()), float(samples.max()), float(samples.std()))
+        print("TRUE min/max/std:", float(y.min()), float(y.max()), float(y.std()))
 
 
         x_list.append(x_cond.detach().cpu().float())
