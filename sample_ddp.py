@@ -249,13 +249,14 @@ def main(args):
         samples = diffusion.ddim_sample_loop(
             sample_fn,
             z.shape,
-            noise=z,                
+            noise=z,                    # your multiscale init
             clip_denoised=False,
-            model_kwargs=model_kwargs,
+            model_kwargs={"x_cond": x_cond, "phys": None},
             progress=False,
             device=device,
-            eta=0.0,                
-       )
+            eta=0.0,                    # deterministic: no stochastic term
+        )
+
 
         print("SAMP min/max/std:", float(samples.min()), float(samples.max()), float(samples.std()))
         print("TRUE min/max/std:", float(y.min()), float(y.max()), float(y.std()))

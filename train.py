@@ -7,7 +7,7 @@ A minimal training script for DiT using PyTorch DDP.
 """
 import torch
 
-import diffusion
+from diffusion.gaussian_diffusion import _extract_into_tensor
 # the first flag below was False when we tested this script but True makes A100 training a lot faster:
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -331,7 +331,9 @@ def main(args):
             eps = multiscale_noise(y)  # (B, Cy, H, W)
 
             # build y_t = sqrt(alpha_bar_t) y + sqrt(1-alpha_bar_t) eps
-            alpha_bar = gather_alpha_bar(diffusion, t, device)          # (B,1,1,1)
+            
+            alpha_bar = _extract_into_tensor(diffusion.alphas_cumprod, t, y.shape)
+
             y_t = alpha_bar.sqrt() * y + (1.0 - alpha_bar).sqrt() * eps
 
             # concat conditioning and noisy target along channels
