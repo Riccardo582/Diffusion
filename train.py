@@ -373,7 +373,7 @@ def main(args):
             opt.zero_grad()
             loss.backward()
             opt.step()
-            update_ema(ema, model.module,decay=0.999)
+            update_ema(ema, model.module,decay=0.99)
 
             # Log loss values:
             running_loss += loss.item()
