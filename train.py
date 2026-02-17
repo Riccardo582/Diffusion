@@ -264,7 +264,7 @@ def main(args):
     requires_grad(ema, False)
     device = torch.device("cuda", device)
     model = DDP(model.to(device), device_ids=[device])
-    diffusion = create_diffusion(timestep_respacing="")  # default: 1000 steps, linear noise schedule
+    diffusion = create_diffusion(timestep_respacing="",learn_sigma=False)  # default: 1000 steps, linear noise schedule
     logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Setup optimizer (default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4):

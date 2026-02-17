@@ -132,7 +132,7 @@ class DiT(nn.Module):
     def __init__(
         self,
         input_size=32,
-        patch_size=2,
+        patch_size=1,
         in_channels=1, # Set later to Cx + Cy
         hidden_size=1152,
         depth=28,
