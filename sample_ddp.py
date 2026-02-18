@@ -237,8 +237,7 @@ def main(args):
           
         
         # Start from noise in target space (Cy,H,W)
-        z0 = torch.zeros((n, args.cy, args.H, args.W), device=device)
-        z  = multiscale_noise(z0)   
+        z = torch.randn((n, args.cy, args.H, args.W), device=device)   
 
         if phys is not None:
             phys = phys.to(device, non_blocking=True).float()

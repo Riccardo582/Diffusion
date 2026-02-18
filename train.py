@@ -152,11 +152,7 @@ def create_logger(logging_dir):
 
 def multiscale_noise(y, k=4, alpha=0.5):
     """
-    Multiscale Gaussian noise consistent with DDPM/DDIM assumptions:
-    - fixed pyramid scales (deterministic)
-    - fixed weights alpha**i
-    - analytic normalization (no per-sample std normalization)
-
+    Multiscale Gaussian noise 
     y: (B,C,H,W) or (B,H,W) used only for shape/device
     returns: (B,C,H,W)
     """
