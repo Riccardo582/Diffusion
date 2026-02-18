@@ -7,7 +7,7 @@ A minimal training script for DiT using PyTorch DDP.
 """
 import torch
 
-from diffusion.gaussian_diffusion import _extract_into_tensor
+import diffusion
 # the first flag below was False when we tested this script but True makes A100 training a lot faster:
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -18,7 +18,6 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import Dataset
 import torch.nn.functional as F
 import numpy as np
-import math
 from collections import OrderedDict
 from copy import deepcopy
 from glob import glob
@@ -105,7 +104,7 @@ class PDEDataset(Dataset):
 
 
 @torch.no_grad()
-def update_ema(ema_model, model, decay=0.999):
+def update_ema(ema_model, model, decay=0.9999):
     """
     Step the Exponential Moving Average model towards the current model.
     """
@@ -148,41 +147,25 @@ def create_logger(logging_dir):
         logger.addHandler(logging.NullHandler())
     return logger
 
-
-
-def multiscale_noise(y, k=4, alpha=0.5):
-    """
-    Multiscale Gaussian noise 
-    y: (B,C,H,W) or (B,H,W) used only for shape/device
-    returns: (B,C,H,W)
-    """
+def multiscale_noise(y,scales=(1,2,4,8),weights=None):
+    '''Implements multiscale noise
+    y: (B,C,H,W) tensor
+    scales: list of scales (integers)
+    weights: list of weights (floats), same length as scales
+    returns: (B,C,H,W) tensor of multiscale noise
+    '''
     if y.dim() == 3:
-        y = y.unsqueeze(1)
-    B, C, H, W = y.shape
-    device = y.device
-
-    # base full-res noise (i=0)
-    E = torch.randn(B, C, H, W, device=device)
-    var = 1.0  
-
-    h_i, w_i = H, W
-    for i in range(1, k):
-        h_i = max(2, H // (2**i))
-        w_i = max(2, W // (2**i))
-        if h_i < 2 or w_i < 2:
-            break
-
-        eps = torch.randn(B, C, h_i, w_i, device=device)
-        eps = F.interpolate(eps, size=(H, W), mode="bilinear", align_corners=False)
-
-        w = alpha ** i
-        E = E + w * eps
-        var += w * w
-
-    # analytic normalization to unit per-pixel std (approximately)
-    E = E / math.sqrt(var)
-    return E
-
+        y = y.unsqueeze(1)  # (B,1,H,W)
+    B,C,H,W = y.shape
+    if weights is None:
+        weights = [1/len(scales)]*len(scales) # equal weights
+    out = 0.0
+    for s,w in zip(scales,weights):
+        h, w = max(1, H // s), max(1, W // s) 
+        eps = torch.randn(B, C, h, w, device=y.device)
+        eps = torch.nn.functional.interpolate(eps, size=(H,W), mode='bilinear', align_corners=False)
+        out = out + w*eps
+    return out
 
 def gather_alpha_bar(diffusion,t,device):
     """
@@ -198,7 +181,7 @@ def gather_alpha_bar(diffusion,t,device):
     else:
         ab = torch.tensor(ab, dtype=torch.float32, device=device)
 
-    t = t.long().to(device)        # indices must be int
+    t = t.long().to(device)        # indices must be int64
     out = ab.gather(0, t)          # (B,)
     return out.view(-1, 1, 1, 1)   # (B,1,1,1)
 
@@ -220,22 +203,6 @@ def pde_collate(batch):
 
     return x, y, phys
 
-from diffusion.gaussian_diffusion import _extract_into_tensor
-
-@torch.no_grad()
-def log_x0_recon_stats(diffusion, y, y_t, t, eps_hat, logger, prefix="x0"):
-    # compute x0_hat the same way the diffusion code does for eps-pred
-    ab = _extract_into_tensor(diffusion.alphas_cumprod, t, y.shape)
-    x0_hat = (y_t - (1.0 - ab).sqrt() * eps_hat) / (ab.sqrt() + 1e-8)
-
-    err = x0_hat - y
-
-    # core calibration signals (these match your sampling complaints)
-    logger.info(
-        f"{prefix}: y std {y.std().item():.4f} | x0_hat std {x0_hat.std().item():.4f} | "
-        f"bias {err.mean().item():.4f} | err std {err.std().item():.4f} | "
-        f"err min/max {err.min().item():.3f}/{err.max().item():.3f}"
-    )
 
 #################################################################################
 #                                  Training Loop                                #
@@ -273,26 +240,21 @@ def main(args):
     # Create model:
     model = DiT_models[args.model](
         input_size=args.image_size,
-        in_channels=args.cx + args.cy,
+        in_channels=args.cx+args.cy,
         learn_sigma=False,
         pos_mode=args.pos_mode,
-        n_phys_params=args.phys_dim,
     )
     model.set_out_channels(cy=args.cy)
-
     
-    # Parameter initialization is done within the DiT constructor
+    # Note that parameter initialization is done within the DiT constructor
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
     requires_grad(ema, False)
     device = torch.device("cuda", device)
     model = DDP(model.to(device), device_ids=[device])
-    diffusion = create_diffusion(timestep_respacing="",learn_sigma=False)  # default: 1000 steps, linear noise schedule
-    for name in ["model_mean_type", "model_var_type", "loss_type", "rescale_timesteps"]:
-        if hasattr(diffusion, name):
-            print(name, "=", getattr(diffusion, name))
+    diffusion = create_diffusion(timestep_respacing="")  # default: 1000 steps, linear noise schedule
     logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    # Setup optimizer (default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4):
+    # Setup optimizer (we used default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4 in our paper):
     opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
 
     # Setup data:
@@ -356,9 +318,7 @@ def main(args):
             eps = multiscale_noise(y)  # (B, Cy, H, W)
 
             # build y_t = sqrt(alpha_bar_t) y + sqrt(1-alpha_bar_t) eps
-            
-            alpha_bar = _extract_into_tensor(diffusion.alphas_cumprod, t, y.shape)
-
+            alpha_bar = gather_alpha_bar(diffusion, t, device)          # (B,1,1,1)
             y_t = alpha_bar.sqrt() * y + (1.0 - alpha_bar).sqrt() * eps
 
             # concat conditioning and noisy target along channels
@@ -373,23 +333,11 @@ def main(args):
             # forward pass: model predicts ε_hat for the target channels
             eps_hat = model(s, t, phys_params=phys)                     # (B, Cy, H, W) if learn_sigma=False
                                                                     # or (B, 2*Cy, ...) if learn_sigma=True
-            # Debugging metrics
-            with torch.no_grad():
-                # cosine similarity over batch
-                cos = torch.nn.functional.cosine_similarity(
-                eps_hat.flatten(1), eps.flatten(1), dim=1
-                ).mean()
-                # relative RMSE
-                rel = (eps_hat - eps).pow(2).mean().sqrt() / (eps.pow(2).mean().sqrt() + 1e-8)
-                # std ratio (should approach 1)
-                ratio = eps_hat.std() / (eps.std() + 1e-8)
-                if rank == 0 and train_steps % args.log_every == 0:
-                    print("cos:", cos.item(), "rel:", rel.item(), "std_ratio:", ratio.item())
 
             # if learn_sigma=True and the model outputs [eps_hat, other], need to split here.
-            # For pure SimDiffPDE error prediction, set learn_sigma=False in model creation.
+            # For pure SimDiffPDE ε-prediction, set learn_sigma=False in model creation.
 
-            # Multi loss: L2 + L1 on epsilon
+            # SimDiffPDE loss: L2 + L1 on ε
             loss_l2 = F.mse_loss(eps_hat, eps)
             loss_l1 = F.l1_loss(eps_hat, eps)
             loss = loss_l2 + loss_l1
@@ -398,7 +346,7 @@ def main(args):
             opt.zero_grad()
             loss.backward()
             opt.step()
-            update_ema(ema, model.module,decay=0.999)
+            update_ema(ema, model.module)
 
             # Log loss values:
             running_loss += loss.item()
@@ -418,20 +366,6 @@ def main(args):
                 running_loss = 0
                 log_steps = 0
                 start_time = time()
-            if epoch == 0 and train_steps == 0 and rank == 0:
-                print("x_cond mean/std:", x_cond.mean().item(), x_cond.std().item())
-                print("y mean/std:", y.mean().item(), y.std().item())
-            if train_steps % args.log_every == 0:
-                # force evaluation at small t where x0 is well-conditioned
-                t_small = torch.randint(0, 50, (y.shape[0],), device=y.device)  # adjust 50
-                eps_eval = torch.randn_like(y)  # or your multiscale noise if that's your training corruption
-                ab = _extract_into_tensor(diffusion.alphas_cumprod, t_small, y.shape)
-                y_t_small = ab.sqrt() * y + (1.0 - ab).sqrt() * eps_eval
-
-                s_small = torch.cat([x_cond, y_t_small], dim=1)
-                eps_hat_small = model(s_small, t_small, phys_params=phys if args.phys_dim>0 else None)
-
-                log_x0_recon_stats(diffusion, y, y_t_small, t_small, eps_hat_small, logger, prefix="x0@t<50")
 
             # Save DiT checkpoint:
             if train_steps % args.ckpt_every == 0 and train_steps > 0:
