@@ -18,6 +18,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import Dataset
 import torch.nn.functional as F
 import numpy as np
+import math
 from collections import OrderedDict
 from copy import deepcopy
 from glob import glob
@@ -147,36 +148,45 @@ def create_logger(logging_dir):
         logger.addHandler(logging.NullHandler())
     return logger
 
+
+
 def multiscale_noise(y, k=4, alpha=0.5):
     """
-    Multi-scale noise 
-    y: (B,C,H,W) or (B,H,W)
-    returns: (B,C,H,W) noise
+    Multiscale Gaussian noise consistent with DDPM/DDIM assumptions:
+    - fixed pyramid scales (deterministic)
+    - fixed weights alpha**i
+    - analytic normalization (no per-sample std normalization)
+
+    y: (B,C,H,W) or (B,H,W) used only for shape/device
+    returns: (B,C,H,W)
     """
     if y.dim() == 3:
         y = y.unsqueeze(1)
     B, C, H, W = y.shape
+    device = y.device
 
-    # Initialize with base Gaussian at full resolution
-    E = torch.randn(B, C, H, W, device=y.device)
+    # base full-res noise (i=0)
+    E = torch.randn(B, C, H, W, device=device)
+    var = 1.0  
+
     h_i, w_i = H, W
-    for i in range(k):
-        # Random scaling factor r 
-        r = (torch.rand((), device=y.device) * 2.0 + 2.0).item()
-        if i > 0:
-            h_i = max(1, int(H / (r ** i)))
-            w_i = max(1, int(W / (r ** i)))
-
-        if h_i == 1 or w_i == 1:
+    for i in range(1, k):
+        h_i = max(2, H // (2**i))
+        w_i = max(2, W // (2**i))
+        if h_i < 2 or w_i < 2:
             break
 
-        eps = torch.randn(B, C, h_i, w_i, device=y.device)
+        eps = torch.randn(B, C, h_i, w_i, device=device)
         eps = F.interpolate(eps, size=(H, W), mode="bilinear", align_corners=False)
-        E = E + (alpha ** i) * eps
 
-    # Standardize per-sample to unit std 
-    E = E / (E.flatten(1).std(dim=1, keepdim=True).view(B, 1, 1, 1) + 1e-8)
+        w = alpha ** i
+        E = E + w * eps
+        var += w * w
+
+    # analytic normalization to unit per-pixel std (approximately)
+    E = E / math.sqrt(var)
     return E
+
 
 def gather_alpha_bar(diffusion,t,device):
     """
@@ -373,7 +383,7 @@ def main(args):
             opt.zero_grad()
             loss.backward()
             opt.step()
-            update_ema(ema, model.module,decay=0.99)
+            update_ema(ema, model.module,decay=0.999)
 
             # Log loss values:
             running_loss += loss.item()
