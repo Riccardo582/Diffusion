@@ -271,6 +271,9 @@ def main(args):
     device = torch.device("cuda", device)
     model = DDP(model.to(device), device_ids=[device])
     diffusion = create_diffusion(timestep_respacing="",learn_sigma=False)  # default: 1000 steps, linear noise schedule
+    for name in ["model_mean_type", "model_var_type", "loss_type", "rescale_timesteps"]:
+        if hasattr(diffusion, name):
+            print(name, "=", getattr(diffusion, name))
     logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Setup optimizer (default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4):

@@ -198,7 +198,9 @@ def main(args):
 
 
     diffusion = create_diffusion(timestep_respacing="", learn_sigma=False)
-
+    for name in ["model_mean_type", "model_var_type", "loss_type", "rescale_timesteps"]:
+        if hasattr(diffusion, name):
+            print(name, "=", getattr(diffusion, name))
     # Output
     os.makedirs(args.sample_dir, exist_ok=True)
     dist.barrier()
