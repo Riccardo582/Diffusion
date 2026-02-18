@@ -245,15 +245,14 @@ def main(args):
             if phys.numel() == 0:
                 phys = None
 
-        samples = diffusion.ddim_sample_loop(
+        samples = diffusion.p_sample_loop(
             sample_fn,
             z.shape,
-            noise=z,                    # your multiscale init
+            noise=z,                    # multiscale init
             clip_denoised=False,
             model_kwargs={"x_cond": x_cond, "phys": phys},
             progress=False,
             device=device,
-            eta=0.0,                    # deterministic: no stochastic term
         )
 
 
