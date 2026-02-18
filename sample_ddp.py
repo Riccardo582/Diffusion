@@ -197,7 +197,7 @@ def main(args):
     model = model.to(device).eval() 
 
 
-    diffusion = create_diffusion(timestep_respacing="", learn_sigma=False)
+    diffusion = create_diffusion(timestep_respacing=args.num_sampling_steps, learn_sigma=False)
     for name in ["model_mean_type", "model_var_type", "loss_type", "rescale_timesteps"]:
         if hasattr(diffusion, name):
             print(name, "=", getattr(diffusion, name))
