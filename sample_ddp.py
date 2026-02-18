@@ -84,55 +84,7 @@ def load_ckpt(path: str, prefer_ema: bool = True):
     state = _strip_prefix(state)
     return state, train_args, which, ckpt
 
-@torch.no_grad()
-def audit_diffusion_interpretation(diffusion, model, x_cond, y_true, device):
-    B = y_true.shape[0]
-    t = torch.randint(0, diffusion.num_timesteps, (B,), device=device, dtype=torch.long)
 
-    # Use STANDARD Gaussian for the audit
-    eps = torch.randn_like(y_true)
-
-    ab = _extract_into_tensor(diffusion.alphas_cumprod, t, y_true.shape)
-    y_t = ab.sqrt() * y_true + (1.0 - ab).sqrt() * eps
-
-    # Wrap your conditional forward into a model callable matching diffusion API
-    def model_wrap(x, t, **kw):
-        s = torch.cat([kw["x_cond"], x], dim=1)
-        if kw.get("phys", None) is None:
-            return model(s, t)
-        return model(s, t, phys_params=kw["phys"])
-
-    out = diffusion.p_mean_variance(
-        model_wrap,
-        y_t,
-        t,
-        clip_denoised=False,
-        model_kwargs={"x_cond": x_cond, "phys": None},
-    )
-
-    # These keys exist in guided-diffusion style implementations
-    pred_x0 = out["pred_xstart"] if "pred_xstart" in out else None
-
-    # Recover eps implied by pred_x0 (this is what "EPSILON mode" should match)
-    if pred_x0 is not None:
-        eps_implied = (y_t - ab.sqrt() * pred_x0) / ((1.0 - ab).sqrt() + 1e-8)
-
-        # Compare implied eps with true eps used to build y_t
-        cos = torch.nn.functional.cosine_similarity(
-            eps_implied.flatten(1), eps.flatten(1), dim=1
-        ).mean()
-        rel = (eps_implied - eps).pow(2).mean().sqrt() / (eps.pow(2).mean().sqrt() + 1e-8)
-
-        # Compare pred_x0 with true y
-        x0_rel = (pred_x0 - y_true).pow(2).mean().sqrt() / (y_true.pow(2).mean().sqrt() + 1e-8)
-
-        print("AUDIT cos(eps_implied, eps):", float(cos))
-        print("AUDIT rel_eps:", float(rel))
-        print("AUDIT rel_x0:", float(x0_rel))
-        print("pred_x0 mean/std:", float(pred_x0.mean()), float(pred_x0.std()))
-        print("true   mean/std:", float(y_true.mean()), float(y_true.std()))
-    else:
-        print("p_mean_variance did not return pred_xstart; inspect diffusion implementation keys:", out.keys())
 
 def main(args):
     """
@@ -197,7 +149,7 @@ def main(args):
     model = model.to(device).eval() 
 
 
-    diffusion = create_diffusion(timestep_respacing=args.num_sampling_steps, learn_sigma=False)
+    diffusion = create_diffusion(timestep_respacing=str(args.num_sampling_steps), learn_sigma=False)
     for name in ["model_mean_type", "model_var_type", "loss_type", "rescale_timesteps"]:
         if hasattr(diffusion, name):
             print(name, "=", getattr(diffusion, name))
@@ -264,7 +216,6 @@ def main(args):
         if epoch == 0 and rank == 0:
             print("x_cond mean/std:", x_cond.mean().item(), x_cond.std().item())
             print("y mean/std:", y.mean().item(), y.std().item())
-            audit_diffusion_interpretation(diffusion, model, x_cond, y, device)
         #test one step of the model to check it is working and matches training signature
         from diffusion.gaussian_diffusion import _extract_into_tensor
 

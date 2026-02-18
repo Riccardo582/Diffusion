@@ -220,6 +220,22 @@ def pde_collate(batch):
 
     return x, y, phys
 
+from diffusion.gaussian_diffusion import _extract_into_tensor
+
+@torch.no_grad()
+def log_x0_recon_stats(diffusion, y, y_t, t, eps_hat, logger, prefix="x0"):
+    # compute x0_hat the same way the diffusion code does for eps-pred
+    ab = _extract_into_tensor(diffusion.alphas_cumprod, t, y.shape)
+    x0_hat = (y_t - (1.0 - ab).sqrt() * eps_hat) / (ab.sqrt() + 1e-8)
+
+    err = x0_hat - y
+
+    # core calibration signals (these match your sampling complaints)
+    logger.info(
+        f"{prefix}: y std {y.std().item():.4f} | x0_hat std {x0_hat.std().item():.4f} | "
+        f"bias {err.mean().item():.4f} | err std {err.std().item():.4f} | "
+        f"err min/max {err.min().item():.3f}/{err.max().item():.3f}"
+    )
 
 #################################################################################
 #                                  Training Loop                                #
@@ -405,6 +421,17 @@ def main(args):
             if epoch == 0 and train_steps == 0 and rank == 0:
                 print("x_cond mean/std:", x_cond.mean().item(), x_cond.std().item())
                 print("y mean/std:", y.mean().item(), y.std().item())
+            if train_steps % args.log_every == 0:
+                # force evaluation at small t where x0 is well-conditioned
+                t_small = torch.randint(0, 50, (y.shape[0],), device=y.device)  # adjust 50
+                eps_eval = torch.randn_like(y)  # or your multiscale noise if that's your training corruption
+                ab = _extract_into_tensor(diffusion.alphas_cumprod, t_small, y.shape)
+                y_t_small = ab.sqrt() * y + (1.0 - ab).sqrt() * eps_eval
+
+                s_small = torch.cat([x_cond, y_t_small], dim=1)
+                eps_hat_small = model(s_small, t_small, phys_params=phys if phys_dim>0 else None)
+
+                log_x0_recon_stats(diffusion, y, y_t_small, t_small, eps_hat_small, logger, prefix="x0@t<50")
 
             # Save DiT checkpoint:
             if train_steps % args.ckpt_every == 0 and train_steps > 0:
