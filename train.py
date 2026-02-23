@@ -282,7 +282,7 @@ def main(args):
 
     
     # Parameter initialization is done within the DiT constructor
-    ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
+    ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training   
     requires_grad(ema, False)
     device = torch.device("cuda", device)
     model = DDP(model.to(device), device_ids=[device])
@@ -292,11 +292,11 @@ def main(args):
             print(name, "=", getattr(diffusion, name))
     logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    # Setup optimizer (default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4):
+    # Setup optimizer (default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4): 
+    # *Look at adaptive lr*
     opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
 
     # Setup data:
-    
     dataset = PDEDataset(args.data_path)
     sampler = DistributedSampler(
         dataset,
