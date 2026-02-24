@@ -255,7 +255,7 @@ def main(args):
             model_kwargs={"x_cond": x_cond, "phys": phys},
             progress=False,
             device=device,
-            eta = 0.3,
+            eta = 0.1,
         )
 
 
