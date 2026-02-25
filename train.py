@@ -5,6 +5,8 @@
 """
 A minimal training script for DiT using PyTorch DDP.
 """
+from xml.parsers.expat import model
+
 import torch
 
 from diffusion.gaussian_diffusion import _extract_into_tensor
@@ -228,11 +230,11 @@ def multiscale_noise_nodes(
         var += w_i * w_i
 
     # normalize to approx unit std
-    E = E / math.sqrt(var)
+    E = E / (E.std(dim=(1,2), keepdim=True) + 1e-8)
 
     return E
 
-from diffusion.gaussian_diffusion import _extract_into_tensor
+
 
 @torch.no_grad()
 def log_x0_recon_stats(diffusion, y, y_t, t, eps_hat, logger, prefix="x0"):
@@ -297,8 +299,11 @@ def main(args):
     # Parameter initialization is done within the DiT constructor
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training   
     requires_grad(ema, False)
-    device = torch.device("cuda", device)
-    model = DDP(model.to(device), device_ids=[device])
+    gpu_id = rank % torch.cuda.device_count()
+    torch.cuda.set_device(gpu_id)
+    device = torch.device("cuda", gpu_id)
+    model = DDP(model.to(device), device_ids=[gpu_id])
+    ema = ema.to(device)
     diffusion = create_diffusion(timestep_respacing="",learn_sigma=False)  # default: 1000 steps, linear noise schedule
     for name in ["model_mean_type", "model_var_type", "loss_type", "rescale_timesteps"]:
         if hasattr(diffusion, name):
@@ -404,13 +409,12 @@ def main(args):
             if train_steps % args.log_every == 0:
                 # force evaluation at small t where x0 is well-conditioned
                 t_small = torch.randint(0, 50, (y.shape[0],), device=y.device)  # adjust 50
-                eps_eval = torch.randn_like(y)  # or your multiscale noise if that's your training corruption
+                eps_eval = multiscale_noise_nodes(y, coords)
                 ab = _extract_into_tensor(diffusion.alphas_cumprod, t_small, y.shape)
                 y_t_small = ab.sqrt() * y + (1.0 - ab).sqrt() * eps_eval
 
-                s_small = torch.cat([x_cond, y_t_small], dim=1)
-                eps_hat_small = model(s_small, t_small, phys_params=phys if args.phys_dim>0 else None)
-
+                s_small = torch.cat([x_cond, y_t_small], dim=-1)
+                eps_hat_small = model(s_small, t_small, phys_params=phys, coords=coords)
                 log_x0_recon_stats(diffusion, y, y_t_small, t_small, eps_hat_small, logger, prefix="x0@t<50")
 
             # Save DiT checkpoint:
@@ -439,7 +443,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-path", type=str, required=True)
     parser.add_argument("--results-dir", type=str, default="results")
-    parser.add_argument("--model", type=str, choices=list(DiT_models.keys()), default="DiT-XL/2")
+    parser.add_argument("--model", type=str, choices=list(DiT_models.keys()), default="DiT-XL")
     parser.add_argument("--epochs", type=int, default=1400)
     parser.add_argument("--global-batch-size", type=int, default=256)
     parser.add_argument("--global-seed", type=int, default=0)
