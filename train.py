@@ -35,11 +35,22 @@ from diffusion import create_diffusion
 #################################################################################
 
 class PDEDataset(Dataset):
-    def __init__(self, path):
+    """
+    Expected per-sample dict (either inside a packed file or one file per sample):
+      "x_cond": (N_nodes, Cx)
+      "y":      (N_nodes, Cy)
+      "coords": (N_nodes, d)
+      "phys":   (P,) optional
+    Packed-file format:
+      obj["x_cond"]: (N_samples, N_nodes, Cx)
+      obj["y"]:      (N_samples, N_nodes, Cy)
+      obj["coords"]: (N_samples, N_nodes, d)
+      obj["phys"]:   (N_samples, P) optional
+    """
+    def __init__(self, path: str):
         super().__init__()
         self.path = path
 
-        # Directory of .pt files
         if os.path.isdir(path):
             self.mode = "dir"
             self.items = sorted(
@@ -49,29 +60,39 @@ class PDEDataset(Dataset):
                 raise FileNotFoundError(f"No .pt files found in directory: {path}")
             return
 
-        # Single packed .pt file
         if os.path.isfile(path) and path.endswith(".pt"):
             self.mode = "file"
             obj = torch.load(path, map_location="cpu")
-
             if not isinstance(obj, dict):
                 raise TypeError(f"Expected a dict in {path}, got {type(obj)}")
 
             def pick(d, keys):
                 for k in keys:
-                    v = d.get(k, None)
-                    if v is not None:
-                        return v
+                    if k in d and d[k] is not None:
+                        return d[k]
                 return None
-            self.x = pick(obj,["x_cond","x","a"])
-            self.y = pick(obj,["y","u"])
+
+            self.x = pick(obj, ["x_cond", "x"])
+            self.y = pick(obj, ["y", "u"])
+            self.coords = pick(obj, ["coords", "xy", "xyz"])
             self.phys = obj.get("phys", None)
 
-            if self.x is None or self.y is None:
-                raise KeyError(f"Could not find x/y tensors in {path}. Keys: {list(obj.keys())}")
+            if self.x is None or self.y is None or self.coords is None:
+                raise KeyError(
+                    f"Missing required tensors in {path}. Need x_cond/x, y/u, coords. Keys: {list(obj.keys())}"
+                )
 
-            if self.x.shape[0] != self.y.shape[0]:
-                raise ValueError(f"x and y must have same N. Got {self.x.shape[0]} vs {self.y.shape[0]}")
+            if self.x.shape[0] != self.y.shape[0] or self.x.shape[0] != self.coords.shape[0]:
+                raise ValueError(
+                    f"N_samples mismatch: x {self.x.shape[0]}, y {self.y.shape[0]}, coords {self.coords.shape[0]}"
+                )
+
+            # fixed-node-count assumption for this version
+            if self.x.dim() != 3 or self.y.dim() != 3 or self.coords.dim() != 3:
+                raise ValueError(
+                    f"Expected packed tensors with shape (N_samples, N_nodes, C). "
+                    f"Got x {tuple(self.x.shape)}, y {tuple(self.y.shape)}, coords {tuple(self.coords.shape)}"
+                )
 
             self.N = self.x.shape[0]
             return
@@ -79,30 +100,28 @@ class PDEDataset(Dataset):
         raise FileNotFoundError(f"Not a valid directory or .pt file: {path}")
 
     def __len__(self):
-        if self.mode == "dir":
-            return len(self.items)
-        return self.N
+        return len(self.items) if self.mode == "dir" else self.N
 
     def __getitem__(self, idx):
         if self.mode == "dir":
             sample = torch.load(self.items[idx], map_location="cpu")
-            x_cond = sample["x_cond"].float()
-            y = sample["y"].float()
-            phys = sample.get("phys", None)
-            if phys is not None:
-                phys = phys.float()
-            else:
-                phys = torch.empty(0)
-            return x_cond, y, phys
+            x_cond = sample["x_cond"].float()      # (N, Cx)
+            y      = sample["y"].float()           # (N, Cy)
+            coords = sample["coords"].float()      # (N, d)
+            phys   = sample.get("phys", None)
+            phys = phys.float() if phys is not None else torch.empty(0)
+            return x_cond, y, phys, coords
 
         # mode == "file"
-        x_cond = self.x[idx].float()
-        y = self.y[idx].float()
+        x_cond = self.x[idx].float()              # (N, Cx)
+        y      = self.y[idx].float()              # (N, Cy)
+        coords = self.coords[idx].float()         # (N, d)
         phys = None
         if self.phys is not None:
             phys = self.phys[idx].float()
-        return x_cond, y, phys
-
+        else:
+            phys = torch.empty(0)
+        return x_cond, y, phys, coords
 
 @torch.no_grad()
 def update_ema(ema_model, model, decay=0.999):
@@ -150,75 +169,68 @@ def create_logger(logging_dir):
 
 
 
-def multiscale_noise(y, k=4, alpha=0.5):
+
+@torch.no_grad()
+def multiscale_noise_nodes(
+    y: torch.Tensor,          # (B, N, C) only used for shape/device/dtype
+    coords: torch.Tensor,     # (B, N, d) node coordinates
+    k: int = 16,              # kNN degree
+    sigmas=(0.02, 0.05, 0.10, 0.20),  # spatial scales in coordinate units
+    alpha: float = 0.5,       # geometric weight per scale
+    iters: int = 1,           # repeat smoothing (increases low-pass strength)
+    eps: float = 1e-12,
+) -> torch.Tensor:
     """
-    Multiscale Gaussian noise 
-    y: (B,C,H,W) or (B,H,W) used only for shape/device
-    returns: (B,C,H,W)
+    Multiscale correlated Gaussian noise on node sets using a kNN heat-kernel filter.
+
+    Returns:
+      E: (B, N, C) approximately unit-std per channel (global)
     """
-    if y.dim() == 3:
-        y = y.unsqueeze(1)
-    B, C, H, W = y.shape
+    B, N, C = y.shape
     device = y.device
+    dtype = y.dtype
 
-    # base full-res noise (i=0)
-    E = torch.randn(B, C, H, W, device=device)
-    var = 1.0  
+    coords = coords.to(device=device, dtype=dtype)
 
-    h_i, w_i = H, W
-    for i in range(1, k):
-        h_i = max(2, H // (2**i))
-        w_i = max(2, W // (2**i))
-        if h_i < 2 or w_i < 2:
-            break
+    # Pairwise squared distances (B, N, N)
+    # For large N this is O(N^2). Works if N is a few thousand or less.
+    d2 = torch.cdist(coords, coords, p=2) ** 2
 
-        eps = torch.randn(B, C, h_i, w_i, device=device)
-        eps = F.interpolate(eps, size=(H, W), mode="bilinear", align_corners=False)
+    # kNN indices per node (exclude self by taking k+1 then dropping the first)
+    knn_idx = torch.topk(d2, k=k+1, dim=-1, largest=False).indices  # (B,N,k+1)
+    knn_idx = knn_idx[:, :, 1:]                                     # (B,N,k)
 
-        w = alpha ** i
-        E = E + w * eps
-        var += w * w
+    # gather neighbor distances: (B,N,k)
+    d2_knn = d2.gather(-1, knn_idx)
 
-    # analytic normalization to unit per-pixel std (approximately)
+    # base full-res iid noise
+    E = torch.randn((B, N, C), device=device, dtype=dtype)
+    var = 1.0
+
+    # helper: one smoothing pass with heat weights
+    def smooth(x, sigma):
+        # weights: exp(-d^2 / (2 sigma^2))
+        w = torch.exp(-d2_knn / (2.0 * (sigma * sigma) + eps))      # (B,N,k)
+        w = w / (w.sum(dim=-1, keepdim=True) + eps)                 # normalize (B,N,k)
+
+        # neighbor values: x_neighbors (B,N,k,C)
+        x_nb = x.gather(1, knn_idx.unsqueeze(-1).expand(B, N, k, C))
+        # weighted sum over neighbors -> (B,N,C)
+        return (w.unsqueeze(-1) * x_nb).sum(dim=2)
+
+    # multiscale sum: progressively smoother fields
+    for i, sigma in enumerate(sigmas, start=1):
+        x = torch.randn((B, N, C), device=device, dtype=dtype)
+        for _ in range(iters):
+            x = smooth(x, sigma)
+        w_i = alpha ** i
+        E = E + w_i * x
+        var += w_i * w_i
+
+    # normalize to approx unit std
     E = E / math.sqrt(var)
+
     return E
-
-
-def gather_alpha_bar(diffusion,t,device):
-    """
-    Gather alpha_bar values for a batch of timesteps.
-    """
-    ab = diffusion.alphas_cumprod  
-
-    # Convert once per call if needed and move to device
-    if isinstance(ab, np.ndarray):
-        ab = torch.from_numpy(ab).float().to(device)
-    elif isinstance(ab, torch.Tensor):
-        ab = ab.to(device)
-    else:
-        ab = torch.tensor(ab, dtype=torch.float32, device=device)
-
-    t = t.long().to(device)        # indices must be int
-    out = ab.gather(0, t)          # (B,)
-    return out.view(-1, 1, 1, 1)   # (B,1,1,1)
-
-def pde_collate(batch):
-    """Collate function that can handle missing phys parameters"""
-    # batch: list of (x_cond, y, phys)
-    x_list, y_list, phys_list = zip(*batch)
-    x = torch.stack(x_list, dim=0)
-    y = torch.stack(y_list, dim=0)
-
-    # If phys is missing, return an empty tensor 
-    if all(p is None for p in phys_list):
-        phys = torch.empty(len(batch), 0)
-    else:
-        # If some are None and some not, raise inconsistency error
-        if any(p is None for p in phys_list):
-            raise ValueError("Inconsistent phys: some samples have phys, others are None")
-        phys = torch.stack(phys_list, dim=0)
-
-    return x, y, phys
 
 from diffusion.gaussian_diffusion import _extract_into_tensor
 
@@ -272,11 +284,12 @@ def main(args):
 
     # Create model:
     model = DiT_models[args.model](
-        input_size=args.image_size,
+        coord_dim=args.coord_dim,
         in_channels=args.cx + args.cy,
         learn_sigma=False,
-        pos_mode=args.pos_mode,
+        pos_mode=args.pos_mode,        # "none" | "coord_mlp" | "rff"
         n_phys_params=args.phys_dim,
+        # rff_scale=... if using rff
     )
     model.set_out_channels(cy=args.cy)
 
@@ -332,73 +345,40 @@ def main(args):
     for epoch in range(args.epochs):
         sampler.set_epoch(epoch)
         logger.info(f"Beginning epoch {epoch}...")
-        for x_cond, y, phys in loader:
-            # If no phys params, unsqueeze for consistent input shape
-            if x_cond.dim() == 3:
-                x_cond = x_cond.unsqueeze(1)
-            if y.dim() == 3:
-                y = y.unsqueeze(1)
-            x_cond = x_cond.to(device)
-            y      = y.to(device)
+        for x_cond, y, phys, coords in loader:
+            x_cond = x_cond.to(device)     # (B, N, Cx)
+            y      = y.to(device)          # (B, N, Cy)
+            coords = coords.to(device)     # (B, N, d)
+
             phys = phys.to(device).float()
             if phys.numel() == 0:
                 phys = None
-                if train_steps == 0 and rank == 0:
-                    print("x_cond shape:", x_cond.shape)
-                    print("y shape:", y.shape)
 
-            
             B = y.shape[0]
-            # sample diffusion timesteps
             t = torch.randint(0, diffusion.num_timesteps, (B,), device=device, dtype=torch.long)
 
-            # multi-scale training noise 
-            eps = multiscale_noise(y)  # (B, Cy, H, W)
+            # IID Gaussian noise for node targets
+            eps = multiscale_noise_nodes(y, coords)      
 
-            # build y_t = sqrt(alpha_bar_t) y + sqrt(1-alpha_bar_t) eps
-            
-            alpha_bar = _extract_into_tensor(diffusion.alphas_cumprod, t, y.shape)
+            # alpha_bar broadcast to (B, N, Cy)
+            alpha_bar = _extract_into_tensor(diffusion.alphas_cumprod, t, y.shape)  # (B,N,Cy)
 
-            y_t = alpha_bar.sqrt() * y + (1.0 - alpha_bar).sqrt() * eps
+            y_t = alpha_bar.sqrt() * y + (1.0 - alpha_bar).sqrt() * eps            # (B,N,Cy)
 
-            # concat conditioning and noisy target along channels
-            s = torch.cat([x_cond, y_t], dim=1)                         # (B, Cx+Cy, H, W)
+            # concat along feature dim (last)
+            s = torch.cat([x_cond, y_t], dim=-1)   # (B, N, Cx+Cy)
 
-            if rank == 0 and train_steps == 0:
-                m = model.module if hasattr(model, "module") else model
-                print("model type:", type(model))
-                print("inner type:", type(m))
-                print("inner forward:", m.forward)
+            # forward: predict eps on nodes
+            eps_hat = model(s, t, phys_params=phys, coords=coords)  # (B,N,Cy) (or (B,N,2*Cy) if learn_sigma)
 
-            # forward pass: model predicts ε_hat for the target channels
-            eps_hat = model(s, t, phys_params=phys)                     # (B, Cy, H, W) if learn_sigma=False
-                                                                    # or (B, 2*Cy, ...) if learn_sigma=True
-            # Debugging metrics
-            with torch.no_grad():
-                # cosine similarity over batch
-                cos = torch.nn.functional.cosine_similarity(
-                eps_hat.flatten(1), eps.flatten(1), dim=1
-                ).mean()
-                # relative RMSE
-                rel = (eps_hat - eps).pow(2).mean().sqrt() / (eps.pow(2).mean().sqrt() + 1e-8)
-                # std ratio (should approach 1)
-                ratio = eps_hat.std() / (eps.std() + 1e-8)
-                if rank == 0 and train_steps % args.log_every == 0:
-                    print("cos:", cos.item(), "rel:", rel.item(), "std_ratio:", ratio.item())
-
-            # if learn_sigma=True and the model outputs [eps_hat, other], need to split here.
-            # For pure SimDiffPDE error prediction, set learn_sigma=False in model creation.
-
-            # Multi loss: L2 + L1 on epsilon
             loss_l2 = F.mse_loss(eps_hat, eps)
             loss_l1 = F.l1_loss(eps_hat, eps)
             loss = loss_l2 + loss_l1
 
-            # optimize
             opt.zero_grad()
             loss.backward()
             opt.step()
-            update_ema(ema, model.module,decay=0.999)
+            update_ema(ema, model.module, decay=0.999)
 
             # Log loss values:
             running_loss += loss.item()
@@ -465,12 +445,11 @@ if __name__ == "__main__":
     parser.add_argument("--global-seed", type=int, default=0)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--ckpt-every", type=int, default=50_000)
-    parser.add_argument("--image-size", type=int, required=True, help="grid size H=W")
     parser.add_argument("--cx", type=int, required=True, help="conditioning channels Cx")
     parser.add_argument("--cy", type=int, required=True, help="target channels Cy")
-    parser.add_argument("--pos-mode", type=str, choices=["grid_sincos", "none"], default="grid_sincos")
     parser.add_argument("--phys-dim", type=int, default=0, help="number of global physical parameters (P)")
     parser.add_argument("--num-workers", type=int, default=4)
-
+    parser.add_argument("--coord-dim", type=int, required=True)  # 2 or 3
+    parser.add_argument("--pos-mode", type=str, choices=["none", "coord_mlp", "rff"], default="none")
     args = parser.parse_args()
     main(args)
