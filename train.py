@@ -294,7 +294,7 @@ def main(args):
 
     # Setup optimizer (default Adam betas=(0.9, 0.999) and a constant learning rate of 1e-4): 
     # *Look at adaptive lr*
-    opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0)
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-2)
 
     # Setup data:
     dataset = PDEDataset(args.data_path)
