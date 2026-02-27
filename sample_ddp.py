@@ -251,7 +251,7 @@ def main(args):
             sample_fn,
             z.shape,
             noise=z,                    # multiscale init
-            clip_denoised=True,
+            clip_denoised=False,
             model_kwargs={"x_cond": x_cond, "phys": phys},
             progress=False,
             device=device,
